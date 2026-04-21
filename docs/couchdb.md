@@ -1,8 +1,8 @@
 # CouchDB Overview
 
 CouchDB is a document-oriented NoSQL database designed to sync reliably across
-unreliable networks. Its name is a backronym for *Cluster Of Unreliable
-Commodity Hardware* — the design assumes replicas go offline, fork, and
+unreliable networks. Its name is a backronym for _Cluster Of Unreliable
+Commodity Hardware_ — the design assumes replicas go offline, fork, and
 reconverge, and treats that as the normal case rather than an error.
 
 This document covers the major concepts, document shape, and the technical
@@ -42,7 +42,7 @@ compaction rewrites them.
 ### Views (MapReduce)
 
 Secondary indexes are defined as JavaScript `map` (and optional `reduce`)
-functions stored in *design documents*. CouchDB materializes the output into
+functions stored in _design documents_. CouchDB materializes the output into
 its own B-tree, updated incrementally as documents change. Views are queried
 by key, key range, or reduced aggregate.
 
@@ -94,9 +94,9 @@ common to use natural keys (`user:alice`, `2026-04-20-post-slug`) to make
 
 Reserved prefixes:
 
-- `_design/<name>` — *design documents*: contain view definitions, validation
+- `_design/<name>` — _design documents_: contain view definitions, validation
   functions, update handlers. Indexed and processed specially.
-- `_local/<name>` — *local documents*: never replicate. Used for per-replica
+- `_local/<name>` — _local documents_: never replicate. Used for per-replica
   state (e.g. replication checkpoints).
 
 ### `_rev`
@@ -113,7 +113,7 @@ the server, not the client.
 
 ### Revision tree
 
-A document is not a linear chain of revisions but a *tree*. Normal updates
+A document is not a linear chain of revisions but a _tree_. Normal updates
 extend one branch. Conflicting updates across replicas create forks. CouchDB
 stores the full tree topology (intermediate bodies may be pruned by
 compaction, but the structure is preserved) so that replication can reason
@@ -137,20 +137,20 @@ using the system correctly.
 
 ### How conflicts arise
 
-A conflict exists when a document has more than one *leaf* revision — a
+A conflict exists when a document has more than one _leaf_ revision — a
 revision that is not an ancestor of any other revision. There are two paths
 to this state:
 
 1. **Direct write conflict (single database).** Clients A and B both read
    revision `1-abc`. A writes and produces `2-xxx`. B attempts to write with
    `_rev: 1-abc` and receives `409 Conflict`. B must re-read and retry. The
-   fork is *not* persisted; the database always has a single leaf after a
+   fork is _not_ persisted; the database always has a single leaf after a
    direct write.
 
 2. **Replication conflict (across databases).** A writes `2-xxx` on replica
    1. B writes `2-yyy` on replica 2 while offline. When the replicas sync,
-   both revisions now exist in both databases. The fork *is* persisted;
-   replication never discards revisions.
+      both revisions now exist in both databases. The fork _is_ persisted;
+      replication never discards revisions.
 
 The asymmetry is intentional: a single database enforces linear history;
 replication preserves every writer's intent. This is what makes CouchDB
@@ -158,7 +158,7 @@ usable for offline-first applications.
 
 ### Deterministic winner selection
 
-When multiple leaves exist, CouchDB picks one as the *winning* revision using
+When multiple leaves exist, CouchDB picks one as the _winning_ revision using
 an algorithm that is identical on every replica:
 
 1. Prefer non-deleted leaves over deleted ones.
@@ -180,7 +180,7 @@ exist.
   the winner.
 - `GET /db/_changes?style=all_docs` — includes every leaf of each changed
   document, so subscribers can see conflicts as they emerge.
-- A *view* can emit on `doc._conflicts`, producing a materialized "conflicts
+- A _view_ can emit on `doc._conflicts`, producing a materialized "conflicts
   inbox" for an application to work through.
 
 ### Resolving conflicts
@@ -194,7 +194,7 @@ standard procedure:
    merge, CRDT-style union, user prompt, or whatever fits.
 3. `PUT` the merged document as a new revision extending the winning branch.
 4. `DELETE` each losing revision by submitting `{_deleted: true, _rev:
-   <loser>}` for it.
+<loser>}` for it.
 
 Step 4 is load-bearing. Until every loser is tombstoned, the document remains
 "in conflict" and `_conflicts` keeps returning it. Missing this step is the

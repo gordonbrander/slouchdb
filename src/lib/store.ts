@@ -192,7 +192,9 @@ const getByRevStmt = (db: DatabaseSync) =>
   db.prepare("SELECT * FROM documents WHERE _rev = ?");
 
 const changesStmt = (db: DatabaseSync) =>
-  db.prepare("SELECT * FROM documents WHERE _local_seq > ? ORDER BY _local_seq");
+  db.prepare(
+    "SELECT * FROM documents WHERE _local_seq > ? ORDER BY _local_seq",
+  );
 
 /**
  * Optimistic-concurrency write. `_parent` must be a current leaf of `_id`
@@ -270,11 +272,8 @@ export const put = (store: Store, input: PutInput): Document => {
 };
 
 /** Create a tombstone extending `parentRev`. */
-export const remove = (
-  store: Store,
-  id: string,
-  parentRev: string,
-): Document => put(store, { _id: id, _parent: parentRev, _deleted: true });
+export const remove = (store: Store, id: string, parentRev: string): Document =>
+  put(store, { _id: id, _parent: parentRev, _deleted: true });
 
 /**
  * The winning leaf per the CouchDB algorithm:

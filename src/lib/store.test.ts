@@ -387,10 +387,7 @@ test("validation - rejects writes that violate the registered schema", () => {
     required: ["title"],
     additionalProperties: false,
   });
-  assertThrows(
-    () => put(store, { _id: "n1", _type: "note" }),
-    ValidationError,
-  );
+  assertThrows(() => put(store, { _id: "n1", _type: "note" }), ValidationError);
   const ok = put(store, { _id: "n1", _type: "note", title: "hi" });
   assertEquals(parseRev(ok._rev).gen, 1);
   assertEquals(ok.title, "hi");

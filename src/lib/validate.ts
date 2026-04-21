@@ -10,8 +10,9 @@ export const clearSchemaCache = (): void => {
 };
 
 const compile = (jsonSchema: unknown): z.ZodType =>
-  z.fromJSONSchema(jsonSchema as Parameters<typeof z.fromJSONSchema>[0]) as
-    z.ZodType;
+  z.fromJSONSchema(
+    jsonSchema as Parameters<typeof z.fromJSONSchema>[0],
+  ) as z.ZodType;
 
 /**
  * Validator wired for {@link openStore}. Looks up the winning revision of

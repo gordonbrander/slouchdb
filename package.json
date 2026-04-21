@@ -7,9 +7,18 @@
   "type": "module",
   "main": "index.ts",
   "scripts": {
-    "test": "node --test 'src/**/*.test.ts'"
+    "lint": "eslint .",
+    "fmt": "prettier --write .",
+    "check": "tsc --noEmit",
+    "test": "node --test 'src/**/*.test.ts'",
+    "dead": "node --test --experimental-test-coverage 'src/**/*.test.ts'"
   },
   "dependencies": {
     "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "eslint": "^10.2.1",
+    "prettier": "^3.8.3",
+    "typescript": "^6.0.3"
   }
 }

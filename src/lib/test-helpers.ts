@@ -34,10 +34,8 @@ export const assertExists = <T>(
   }
 };
 
-const matches = (
-  ErrorClass?: new (...args: unknown[]) => Error,
-  msg?: string | RegExp,
-) =>
+const matches =
+  (ErrorClass?: new (...args: unknown[]) => Error, msg?: string | RegExp) =>
   (err: unknown): true => {
     if (ErrorClass && !(err instanceof ErrorClass)) {
       throw new Error(

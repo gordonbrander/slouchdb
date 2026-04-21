@@ -10,6 +10,7 @@ deterministic conflict-winner selection, per-type JSONSchema validation, and a
 changes feed that supports replication from/to another slouchdb instance.
 
 Scope per user direction:
+
 - **Include replication** — bulk-insert API that creates forks, changes feed
   with sequence numbers.
 - **Schemas are documents** — no separate `schemas` table; schemas live in the
@@ -212,9 +213,15 @@ transaction is rolled back.
 ### `src/lib/errors.ts`
 
 ```ts
-export class ConflictError extends Error { /* has .id, .expectedParent, .actualLeaves */ }
-export class ValidationError extends Error { /* has .issues */ }
-export class IntegrityError extends Error { /* bulkInsert hash mismatch */ }
+export class ConflictError extends Error {
+  /* has .id, .expectedParent, .actualLeaves */
+}
+export class ValidationError extends Error {
+  /* has .issues */
+}
+export class IntegrityError extends Error {
+  /* bulkInsert hash mismatch */
+}
 ```
 
 ## Behavior details
@@ -285,6 +292,7 @@ revision is emitted, which is CouchDB's `style=all_docs`.
   `assertRejects`, `assertThrows`, `assertExists`.
 
 Reuse:
+
 - `src/lib/cid.ts` — `cid()` for revision hashes; do **not** reimplement.
 
 ## Test plan

@@ -24,9 +24,9 @@ export const openDatabase = (
 
   const applied = new Set<number>(
     (
-      db
-        .prepare("SELECT version FROM _migrations")
-        .all() as Array<{ version: number }>
+      db.prepare("SELECT version FROM _migrations").all() as Array<{
+        version: number;
+      }>
     ).map((r) => r.version),
   );
 

@@ -5,7 +5,9 @@ import { clearSchemaCache, validate } from "./validate.ts";
 import { ValidationError } from "./errors.ts";
 
 /** Shape a PendingDocument without going through put (for direct validate calls). */
-const pending = (fields: Partial<PendingDocument> & { _id: string }): PendingDocument => ({
+const pending = (
+  fields: Partial<PendingDocument> & { _id: string },
+): PendingDocument => ({
   _rev: "1-test",
   _parent: undefined,
   _type: undefined,
