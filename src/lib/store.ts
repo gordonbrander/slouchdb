@@ -6,30 +6,26 @@ import { openDatabase } from "./sqlite.ts";
 /** The authoritative set of reserved field names. */
 export const RESERVED: ReadonlySet<string> = new Set([
   "_id",
-  "_hash",
-  "_gen",
+  "_rev",
   "_parent",
   "_type",
   "_deleted",
-  "_seq",
-  "_createdAt",
+  "_local_seq",
 ]);
 
 /** A flat document: reserved fields + arbitrary user data fields. */
 export type Document = {
+  _local_seq: number;
+  _rev: string;
   _id: string;
-  _hash: string;
-  _gen: number;
   _parent: string | undefined;
   _type: string | undefined;
   _deleted: boolean;
-  _seq: number;
-  _createdAt: number;
   [field: string]: unknown;
 };
 
 /** The doc-shape passed to a validator, before DB-assigned fields are set. */
-export type PendingDocument = Omit<Document, "_seq" | "_createdAt">;
+export type PendingDocument = Omit<Document, "_local_seq">;
 
 /** Input to {@link put}. Unknown reserved fields are ignored. */
 export type PutInput = {
@@ -40,15 +36,13 @@ export type PutInput = {
   [field: string]: unknown;
 };
 
-/** Input to {@link bulkInsert}. Carries pre-computed reserved fields. */
+/** Input to {@link bulkInsert}. Carries a pre-computed `_rev`. */
 export type BulkDocument = {
   _id: string;
-  _hash: string;
-  _gen: number;
+  _rev: string;
   _parent?: string;
   _type?: string;
   _deleted?: boolean;
-  _createdAt: number;
   [field: string]: unknown;
 };
 
@@ -60,7 +54,7 @@ export type Resolved = {
 export type BulkResult = {
   inserted: number;
   skipped: number;
-  rejected: Array<{ hash: string; reason: string }>;
+  rejected: Array<{ rev: string; reason: string }>;
 };
 
 export type Validator = (
@@ -79,18 +73,20 @@ const noValidator: Validator = () => {};
 const migrations: readonly string[] = [
   `
     CREATE TABLE documents (
-      seq         INTEGER PRIMARY KEY AUTOINCREMENT,
-      hash        TEXT UNIQUE NOT NULL,
-      key         TEXT NOT NULL,
-      generation  INTEGER NOT NULL,
-      parent_hash TEXT,
-      type        TEXT,
+      _local_seq  INTEGER PRIMARY KEY AUTOINCREMENT,
+      _rev        TEXT UNIQUE NOT NULL,
+      _id         TEXT NOT NULL,
+      _parent     TEXT,
+      _type       TEXT,
+      _deleted    INTEGER NOT NULL DEFAULT 0,
       data        TEXT NOT NULL,
-      deleted     INTEGER NOT NULL DEFAULT 0,
-      created_at  INTEGER NOT NULL
+      _rev_gen    INTEGER GENERATED ALWAYS AS
+                    (CAST(substr(_rev, 1, instr(_rev, '-') - 1) AS INTEGER)) STORED,
+      _rev_hash   TEXT GENERATED ALWAYS AS
+                    (substr(_rev, instr(_rev, '-') + 1)) STORED
     );
-    CREATE INDEX documents_key_idx ON documents(key);
-    CREATE INDEX documents_parent_idx ON documents(parent_hash);
+    CREATE INDEX documents_id_idx ON documents(_id);
+    CREATE INDEX documents_parent_idx ON documents(_parent);
   `,
 ];
 
@@ -107,15 +103,28 @@ export const closeStore = (store: Store): void => {
 };
 
 type Row = {
-  seq: number;
-  hash: string;
-  key: string;
-  generation: number;
-  parent_hash: string | null;
-  type: string | null;
+  _local_seq: number;
+  _rev: string;
+  _id: string;
+  _parent: string | null;
+  _type: string | null;
+  _deleted: number;
   data: string;
-  deleted: number;
-  created_at: number;
+};
+
+/** Compose a `_rev` string from a generation and bare hash. */
+export const formatRev = (gen: number, hash: string): string =>
+  `${gen}-${hash}`;
+
+/** Parse a `_rev` string into its generation and bare hash. */
+export const parseRev = (rev: string): { gen: number; hash: string } => {
+  const i = rev.indexOf("-");
+  if (i <= 0) throw new Error(`malformed _rev: ${JSON.stringify(rev)}`);
+  const gen = Number(rev.slice(0, i));
+  if (!Number.isInteger(gen) || gen < 1) {
+    throw new Error(`malformed _rev generation: ${JSON.stringify(rev)}`);
+  }
+  return { gen, hash: rev.slice(i + 1) };
 };
 
 /** Return a copy of `doc` with all reserved keys removed. */
@@ -132,22 +141,21 @@ export const extractData = (
 const rowToDocument = (row: Row): Document => {
   const data = JSON.parse(row.data) as Record<string, unknown>;
   return {
-    _id: row.key,
-    _hash: row.hash,
-    _gen: row.generation,
-    _parent: row.parent_hash ?? undefined,
-    _type: row.type ?? undefined,
-    _deleted: row.deleted === 1,
-    _seq: row.seq,
-    _createdAt: row.created_at,
+    _local_seq: row._local_seq,
+    _rev: row._rev,
+    _id: row._id,
+    _parent: row._parent ?? undefined,
+    _type: row._type ?? undefined,
+    _deleted: row._deleted === 1,
     ...data,
   };
 };
 
 /**
- * Compute the content hash for a revision. Normalizes `undefined` parent
- * and type to `null` so presence/absence is unambiguous in the hash input.
- * `_seq` and `_createdAt` are intentionally excluded — they vary by replica.
+ * Compute the content hash for a revision. Returns the bare hash; callers
+ * compose the full `_rev` via {@link formatRev}. Normalizes `undefined`
+ * parent and type to `null` so presence/absence is unambiguous in the hash
+ * input. `_local_seq` is intentionally excluded — it varies by replica.
  */
 export const revisionHash = (input: {
   _id: string;
@@ -169,28 +177,28 @@ export const revisionHash = (input: {
 const leavesByIdStmt = (db: DatabaseSync) =>
   db.prepare(`
     SELECT d.* FROM documents d
-    WHERE d.key = ?
-      AND NOT EXISTS (SELECT 1 FROM documents c WHERE c.parent_hash = d.hash)
+    WHERE d._id = ?
+      AND NOT EXISTS (SELECT 1 FROM documents c WHERE c._parent = d._rev)
   `);
 
 const insertStmt = (db: DatabaseSync) =>
   db.prepare(`
     INSERT OR IGNORE INTO documents
-      (hash, key, generation, parent_hash, type, data, deleted, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (_rev, _id, _parent, _type, _deleted, data)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
 
-const getByHashStmt = (db: DatabaseSync) =>
-  db.prepare("SELECT * FROM documents WHERE hash = ?");
+const getByRevStmt = (db: DatabaseSync) =>
+  db.prepare("SELECT * FROM documents WHERE _rev = ?");
 
 const changesStmt = (db: DatabaseSync) =>
-  db.prepare("SELECT * FROM documents WHERE seq > ? ORDER BY seq");
+  db.prepare("SELECT * FROM documents WHERE _local_seq > ? ORDER BY _local_seq");
 
 /**
  * Optimistic-concurrency write. `_parent` must be a current leaf of `_id`
  * (or unset when `_id` has no existing revisions). Throws
  * {@link ConflictError} on stale or missing parent. Idempotent: if the
- * computed `_hash` already exists, the existing row is returned without
+ * computed `_rev` already exists, the existing row is returned without
  * inserting.
  */
 export const put = (store: Store, input: PutInput): Document => {
@@ -205,26 +213,11 @@ export const put = (store: Store, input: PutInput): Document => {
   try {
     const leaves = leavesByIdStmt(db).all(_id) as Row[];
 
-    let _gen: number;
-    if (_parent === undefined) {
-      _gen = 1;
-    } else {
-      const parent = db
-        .prepare("SELECT * FROM documents WHERE hash = ? AND key = ?")
-        .get(_parent, _id) as Row | undefined;
-      if (!parent) {
-        throw new ConflictError(
-          _id,
-          _parent,
-          leaves.map((l) => l.hash),
-        );
-      }
-      _gen = parent.generation + 1;
-    }
+    const _gen = _parent === undefined ? 1 : parseRev(_parent).gen + 1;
+    const hash = revisionHash({ _id, _gen, _parent, _type, _deleted, data });
+    const _rev = formatRev(_gen, hash);
 
-    const _hash = revisionHash({ _id, _gen, _parent, _type, _deleted, data });
-
-    const existing = getByHashStmt(db).get(_hash) as Row | undefined;
+    const existing = getByRevStmt(db).get(_rev) as Row | undefined;
     if (existing) {
       db.exec("COMMIT");
       return rowToDocument(existing);
@@ -233,8 +226,7 @@ export const put = (store: Store, input: PutInput): Document => {
     if (_type !== undefined && _type !== "_schema") {
       const pending: PendingDocument = {
         _id,
-        _hash,
-        _gen,
+        _rev,
         _parent,
         _type,
         _deleted,
@@ -248,29 +240,27 @@ export const put = (store: Store, input: PutInput): Document => {
         throw new ConflictError(
           _id,
           undefined,
-          leaves.map((l) => l.hash),
+          leaves.map((l) => l._rev),
         );
       }
-    } else if (!leaves.some((l) => l.hash === _parent)) {
+    } else if (!leaves.some((l) => l._rev === _parent)) {
       throw new ConflictError(
         _id,
         _parent,
-        leaves.map((l) => l.hash),
+        leaves.map((l) => l._rev),
       );
     }
 
     insertStmt(db).run(
-      _hash,
+      _rev,
       _id,
-      _gen,
       _parent ?? null,
       _type ?? null,
-      JSON.stringify(data),
       _deleted ? 1 : 0,
-      Date.now(),
+      JSON.stringify(data),
     );
 
-    const row = getByHashStmt(db).get(_hash) as Row;
+    const row = getByRevStmt(db).get(_rev) as Row;
     db.exec("COMMIT");
     return rowToDocument(row);
   } catch (err) {
@@ -279,16 +269,16 @@ export const put = (store: Store, input: PutInput): Document => {
   }
 };
 
-/** Create a tombstone extending `parent`. */
+/** Create a tombstone extending `parentRev`. */
 export const remove = (
   store: Store,
   id: string,
-  parent: string,
-): Document => put(store, { _id: id, _parent: parent, _deleted: true });
+  parentRev: string,
+): Document => put(store, { _id: id, _parent: parentRev, _deleted: true });
 
 /**
  * The winning leaf per the CouchDB algorithm:
- *   prefer non-deleted, then highest `_gen`, then lexicographic `_hash`.
+ *   prefer non-deleted, then highest generation, then lexicographic hash.
  * Tombstones ARE returned when no non-deleted leaf exists; callers check
  * `._deleted`.
  */
@@ -297,9 +287,9 @@ export const get = (store: Store, id: string): Document | undefined => {
     .prepare(
       `
       SELECT d.* FROM documents d
-      WHERE d.key = ?
-        AND NOT EXISTS (SELECT 1 FROM documents c WHERE c.parent_hash = d.hash)
-      ORDER BY d.deleted ASC, d.generation DESC, d.hash ASC
+      WHERE d._id = ?
+        AND NOT EXISTS (SELECT 1 FROM documents c WHERE c._parent = d._rev)
+      ORDER BY d._deleted ASC, d._rev_gen DESC, d._rev_hash ASC
       LIMIT 1
     `,
     )
@@ -307,12 +297,12 @@ export const get = (store: Store, id: string): Document | undefined => {
   return row ? rowToDocument(row) : undefined;
 };
 
-/** Fetch a specific revision by `_hash`, whether leaf or internal. */
+/** Fetch a specific revision by `_rev`, whether leaf or internal. */
 export const getRevision = (
   store: Store,
-  hash: string,
+  rev: string,
 ): Document | undefined => {
-  const row = getByHashStmt(store.db).get(hash) as Row | undefined;
+  const row = getByRevStmt(store.db).get(rev) as Row | undefined;
   return row ? rowToDocument(row) : undefined;
 };
 
@@ -323,27 +313,33 @@ export const getLeaves = (store: Store, id: string): Document[] => {
 };
 
 /**
- * Winner plus the hashes of all other leaves. Matches CouchDB's
+ * Winner plus the `_rev`s of all other leaves. Matches CouchDB's
  * `?conflicts=true` read shape. Undefined if the id is absent.
  */
 export const getResolved = (store: Store, id: string): Resolved | undefined => {
   const leaves = getLeaves(store, id);
   if (leaves.length === 0) return undefined;
-  const sorted = [...leaves].sort((a, b) => {
-    if (a._deleted !== b._deleted) return a._deleted ? 1 : -1;
-    if (a._gen !== b._gen) return b._gen - a._gen;
-    return a._hash < b._hash ? -1 : a._hash > b._hash ? 1 : 0;
+  const decorated = leaves.map((doc) => ({ doc, parsed: parseRev(doc._rev) }));
+  decorated.sort((a, b) => {
+    if (a.doc._deleted !== b.doc._deleted) return a.doc._deleted ? 1 : -1;
+    if (a.parsed.gen !== b.parsed.gen) return b.parsed.gen - a.parsed.gen;
+    return a.parsed.hash < b.parsed.hash
+      ? -1
+      : a.parsed.hash > b.parsed.hash
+        ? 1
+        : 0;
   });
-  const [winner, ...rest] = sorted;
-  return { winner, conflicts: rest.map((r) => r._hash) };
+  const [winner, ...rest] = decorated;
+  return { winner: winner.doc, conflicts: rest.map((r) => r.doc._rev) };
 };
 
 /**
  * Replication ingress. Bypasses the leaf check — forks are intentional.
- * Each doc's `_hash` is recomputed and compared; mismatches are rejected
- * (tracked in the result, not thrown). Missing ancestors are permitted.
- * Schema validation is not run here: a batch may carry the schema
- * alongside data that depends on it, and ingest must not stall on order.
+ * Each doc's `_rev` is reparsed and its hash recomputed from the supplied
+ * fields; mismatches are rejected (tracked in the result, not thrown).
+ * Missing ancestors are permitted. Schema validation is not run here: a
+ * batch may carry the schema alongside data that depends on it, and ingest
+ * must not stall on order.
  */
 export const bulkInsert = (
   store: Store,
@@ -358,30 +354,40 @@ export const bulkInsert = (
     for (const doc of docs) {
       const data = extractData(doc);
       const _deleted = doc._deleted ?? false;
+
+      let parsed: { gen: number; hash: string };
+      try {
+        parsed = parseRev(doc._rev);
+      } catch (err) {
+        result.rejected.push({
+          rev: doc._rev,
+          reason: (err as Error).message,
+        });
+        continue;
+      }
+
       const computed = revisionHash({
         _id: doc._id,
-        _gen: doc._gen,
+        _gen: parsed.gen,
         _parent: doc._parent,
         _type: doc._type,
         _deleted,
         data,
       });
-      if (computed !== doc._hash) {
+      if (computed !== parsed.hash) {
         result.rejected.push({
-          hash: doc._hash,
-          reason: new IntegrityError(doc._hash, computed).message,
+          rev: doc._rev,
+          reason: new IntegrityError(parsed.hash, computed).message,
         });
         continue;
       }
       const info = stmt.run(
-        doc._hash,
+        doc._rev,
         doc._id,
-        doc._gen,
         doc._parent ?? null,
         doc._type ?? null,
-        JSON.stringify(data),
         _deleted ? 1 : 0,
-        doc._createdAt,
+        JSON.stringify(data),
       );
       if (info.changes === 1) result.inserted++;
       else result.skipped++;
@@ -395,7 +401,7 @@ export const bulkInsert = (
   return result;
 };
 
-/** All revisions with `_seq > since`, in `_seq` order. Drives replication. */
+/** All revisions with `_local_seq > since`, in order. Drives replication. */
 export const changesSince = (store: Store, since: number): Document[] => {
   const rows = changesStmt(store.db).all(since) as Row[];
   return rows.map(rowToDocument);

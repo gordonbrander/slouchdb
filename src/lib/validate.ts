@@ -17,7 +17,7 @@ const compile = (jsonSchema: unknown): z.ZodType =>
  * Validator wired for {@link openStore}. Looks up the winning revision of
  * `_schema/<type>`; if it exists and is not a tombstone, compiles its user-
  * data portion as a JSONSchema and runs `safeParse` against `doc`'s user
- * data. The compiled schema is cached by the schema document's `_hash`
+ * data. The compiled schema is cached by the schema document's `_rev`
  * (content-addressed; invalidates automatically when the schema changes).
  *
  * If no schema document exists, validation is skipped. Rationale: a freshly
@@ -33,10 +33,10 @@ export const validate = (
   const schemaDoc = get(store, `_schema/${type}`);
   if (!schemaDoc || schemaDoc._deleted) return;
 
-  let compiled = compiledCache.get(schemaDoc._hash);
+  let compiled = compiledCache.get(schemaDoc._rev);
   if (!compiled) {
     compiled = compile(extractData(schemaDoc));
-    compiledCache.set(schemaDoc._hash, compiled);
+    compiledCache.set(schemaDoc._rev, compiled);
   }
 
   const data = extractData(doc);

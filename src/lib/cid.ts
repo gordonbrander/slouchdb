@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { encodeBase32LowerNoPadding } from "./base32.ts";
 
 /** Return a structural copy of `value` with object keys recursively sorted. */
 export const deterministic = (value: unknown): unknown => {
@@ -20,11 +19,8 @@ export const toDeterministicBytes = (value: unknown): Uint8Array => {
   return textEncoder.encode(JSON.stringify(sorted));
 };
 
-/**
- * Returns the lowercased unpadded base32-encoded SHA-256 digest of `value`.
- */
+/** Returns the lowercase hex-encoded SHA-256 digest of `value`. */
 export const cid = (value: unknown): string => {
   const bytes = toDeterministicBytes(value);
-  const digest = new Uint8Array(createHash("sha256").update(bytes).digest());
-  return encodeBase32LowerNoPadding(digest);
+  return createHash("sha256").update(bytes).digest("hex");
 };

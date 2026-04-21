@@ -72,10 +72,10 @@ test("toDeterministicBytes - preserves array order", () => {
   assertNotEquals(a, b);
 });
 
-test("cid - returns an unpadded lowercase base32 SHA-256 digest", () => {
+test("cid - returns a lowercase hex SHA-256 digest", () => {
   const hash = cid({ a: 1 });
-  assertEquals(hash.length, 52);
-  assert(/^[a-z2-7]{52}$/.test(hash), `expected base32 digest, got ${hash}`);
+  assertEquals(hash.length, 64);
+  assert(/^[0-9a-f]{64}$/.test(hash), `expected hex digest, got ${hash}`);
 });
 
 test("cid - is deterministic for the same logical value", () => {
