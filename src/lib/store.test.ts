@@ -1,10 +1,5 @@
 import { test } from "node:test";
-import {
-  assert,
-  assertEquals,
-  assertExists,
-  assertThrows,
-} from "./test-helpers.ts";
+import { deepStrictEqual, ok, throws } from "node:assert/strict";
 import {
   bulkInsert,
   changesSince,
@@ -33,10 +28,17 @@ const freshValidatingStore = (): Store => {
   return openStore(":memory:", { validate });
 };
 
+type BuildDocInput = {
+  _id: string;
+  _parent?: string;
+  _type?: string;
+  _deleted?: boolean;
+  _gen: number;
+  [field: string]: unknown;
+};
+
 /** Construct a BulkDocument with a correctly computed `_rev`. */
-const buildDoc = (
-  fields: Omit<BulkDocument, "_rev"> & { _gen: number; _deleted?: boolean },
-): BulkDocument => {
+const buildDoc = (fields: BuildDocInput): BulkDocument => {
   const data = extractData(fields as Record<string, unknown>);
   const _deleted = fields._deleted ?? false;
   const hash = revisionHash({
@@ -54,36 +56,36 @@ const buildDoc = (
 
 test("parseRev / formatRev - round-trip and reject malformed input", () => {
   const rev = formatRev(7, "abcdef");
-  assertEquals(rev, "7-abcdef");
+  deepStrictEqual(rev, "7-abcdef");
   const parsed = parseRev(rev);
-  assertEquals(parsed.gen, 7);
-  assertEquals(parsed.hash, "abcdef");
+  deepStrictEqual(parsed.gen, 7);
+  deepStrictEqual(parsed.hash, "abcdef");
 
-  assertThrows(() => parseRev("no-dash-start"), Error);
-  assertThrows(() => parseRev("-leadingdash"), Error);
-  assertThrows(() => parseRev("notanumber-hash"), Error);
-  assertThrows(() => parseRev("0-zerogen"), Error);
-  assertThrows(() => parseRev("1.5-frac"), Error);
+  throws(() => parseRev("no-dash-start"));
+  throws(() => parseRev("-leadingdash"));
+  throws(() => parseRev("notanumber-hash"));
+  throws(() => parseRev("0-zerogen"));
+  throws(() => parseRev("1.5-frac"));
 });
 
 test("openStore - creates schema and close works", () => {
   const store = freshStore();
   const doc = put(store, { _id: "a", n: 1 });
-  assertEquals(parseRev(doc._rev).gen, 1);
+  deepStrictEqual(parseRev(doc._rev).gen, 1);
   closeStore(store);
 });
 
 test("put - genesis write: gen 1 in _rev, no parent, _rev matches, _local_seq 1, data inlined", () => {
   const store = freshStore();
   const doc = put(store, { _id: "doc", hello: "world" });
-  assertEquals(doc._id, "doc");
-  assertEquals(parseRev(doc._rev).gen, 1);
-  assert(doc._rev.startsWith("1-"));
-  assertEquals(doc._parent, undefined);
-  assertEquals(doc._deleted, false);
-  assertEquals(doc._type, undefined);
-  assertEquals(doc._local_seq, 1);
-  assertEquals(doc.hello, "world");
+  deepStrictEqual(doc._id, "doc");
+  deepStrictEqual(parseRev(doc._rev).gen, 1);
+  ok(doc._rev.startsWith("1-"));
+  deepStrictEqual(doc._parent, undefined);
+  deepStrictEqual(doc._deleted, false);
+  deepStrictEqual(doc._type, undefined);
+  deepStrictEqual(doc._local_seq, 1);
+  deepStrictEqual(doc.hello, "world");
   const expectedHash = revisionHash({
     _id: "doc",
     _gen: 1,
@@ -92,7 +94,7 @@ test("put - genesis write: gen 1 in _rev, no parent, _rev matches, _local_seq 1,
     _deleted: false,
     data: { hello: "world" },
   });
-  assertEquals(doc._rev, formatRev(1, expectedHash));
+  deepStrictEqual(doc._rev, formatRev(1, expectedHash));
 });
 
 test("put - linear extension bumps gen; previous rev is no longer a leaf", () => {
@@ -100,25 +102,25 @@ test("put - linear extension bumps gen; previous rev is no longer a leaf", () =>
   const g1 = put(store, { _id: "k", n: 1 });
   const g2 = put(store, { _id: "k", n: 2, _parent: g1._rev });
 
-  assertEquals(parseRev(g2._rev).gen, 2);
-  assertEquals(g2._parent, g1._rev);
+  deepStrictEqual(parseRev(g2._rev).gen, 2);
+  deepStrictEqual(g2._parent, g1._rev);
 
   const leaves = getLeaves(store, "k");
-  assertEquals(leaves.length, 1);
-  assertEquals(leaves[0]._rev, g2._rev);
+  deepStrictEqual(leaves.length, 1);
+  deepStrictEqual(leaves[0]._rev, g2._rev);
 });
 
 test("put - missing _parent when a leaf exists throws ConflictError", () => {
   const store = freshStore();
   put(store, { _id: "k", n: 1 });
-  assertThrows(() => put(store, { _id: "k", n: 2 }), ConflictError);
+  throws(() => put(store, { _id: "k", n: 2 }), ConflictError);
 });
 
 test("put - stale _parent (pointing to former leaf) throws ConflictError", () => {
   const store = freshStore();
   const g1 = put(store, { _id: "k", n: 1 });
   put(store, { _id: "k", n: 2, _parent: g1._rev });
-  assertThrows(
+  throws(
     () => put(store, { _id: "k", n: 3, _parent: g1._rev }),
     ConflictError,
   );
@@ -126,7 +128,7 @@ test("put - stale _parent (pointing to former leaf) throws ConflictError", () =>
 
 test("put - genesis put with a _parent that does not exist throws ConflictError", () => {
   const store = freshStore();
-  assertThrows(
+  throws(
     () => put(store, { _id: "k", n: 1, _parent: "1-nonexistentrev" }),
     ConflictError,
   );
@@ -137,32 +139,32 @@ test("put - is idempotent when called twice with identical content+parent", () =
   const g1 = put(store, { _id: "k", n: 1 });
   const a = put(store, { _id: "k", n: 2, _parent: g1._rev });
   const b = put(store, { _id: "k", n: 2, _parent: g1._rev });
-  assertEquals(a._rev, b._rev);
-  assertEquals(a._local_seq, b._local_seq);
+  deepStrictEqual(a._rev, b._rev);
+  deepStrictEqual(a._local_seq, b._local_seq);
   const all = changesSince(store, 0);
-  assertEquals(all.length, 2);
+  deepStrictEqual(all.length, 2);
 });
 
 test("put - non-reserved `_`-prefixed fields pass through into user data", () => {
   const store = freshStore();
   const doc = put(store, { _id: "x", _custom: "keep", regular: 1 });
-  assertEquals(doc._custom, "keep");
-  assertEquals(doc.regular, 1);
+  deepStrictEqual(doc._custom, "keep");
+  deepStrictEqual(doc.regular, 1);
   const other = put(store, { _id: "y", _custom: "diff", regular: 1 });
-  assert(doc._rev !== other._rev);
+  ok(doc._rev !== other._rev);
 });
 
 test("remove - produces a tombstone that stays in the leaf set", () => {
   const store = freshStore();
   const g1 = put(store, { _id: "k", n: 1 });
   const tomb = remove(store, "k", g1._rev);
-  assertEquals(tomb._deleted, true);
-  assertEquals(parseRev(tomb._rev).gen, 2);
-  assertEquals(tomb._parent, g1._rev);
+  deepStrictEqual(tomb._deleted, true);
+  deepStrictEqual(parseRev(tomb._rev).gen, 2);
+  deepStrictEqual(tomb._parent, g1._rev);
 
   const leaves = getLeaves(store, "k");
-  assertEquals(leaves.length, 1);
-  assertEquals(leaves[0]._rev, tomb._rev);
+  deepStrictEqual(leaves.length, 1);
+  deepStrictEqual(leaves[0]._rev, tomb._rev);
 });
 
 test("get - returns the tombstone when every leaf is deleted", () => {
@@ -170,13 +172,13 @@ test("get - returns the tombstone when every leaf is deleted", () => {
   const g1 = put(store, { _id: "k", n: 1 });
   remove(store, "k", g1._rev);
   const winner = get(store, "k");
-  assertExists(winner);
-  assertEquals(winner._deleted, true);
+  ok(winner);
+  deepStrictEqual(winner._deleted, true);
 });
 
 test("get - returns undefined for an unknown _id", () => {
   const store = freshStore();
-  assertEquals(get(store, "nope"), undefined);
+  deepStrictEqual(get(store, "nope"), undefined);
 });
 
 test("getRevision - returns a specific rev by _rev regardless of leaf status", () => {
@@ -184,9 +186,9 @@ test("getRevision - returns a specific rev by _rev regardless of leaf status", (
   const g1 = put(store, { _id: "k", n: 1 });
   put(store, { _id: "k", n: 2, _parent: g1._rev });
   const fetched = getRevision(store, g1._rev);
-  assertExists(fetched);
-  assertEquals(fetched._rev, g1._rev);
-  assertEquals(parseRev(fetched._rev).gen, 1);
+  ok(fetched);
+  deepStrictEqual(fetched._rev, g1._rev);
+  deepStrictEqual(parseRev(fetched._rev).gen, 1);
 });
 
 test("bulkInsert - creates forks (two leaves with the same parent)", () => {
@@ -208,13 +210,13 @@ test("bulkInsert - creates forks (two leaves with the same parent)", () => {
   });
 
   const result = bulkInsert(store, [g1, g2a, g2b]);
-  assertEquals(result.inserted, 3);
-  assertEquals(result.skipped, 0);
-  assertEquals(result.rejected, []);
+  deepStrictEqual(result.inserted, 3);
+  deepStrictEqual(result.skipped, 0);
+  deepStrictEqual(result.rejected, []);
 
   const leaves = getLeaves(store, "k");
-  assertEquals(leaves.length, 2);
-  assert(
+  deepStrictEqual(leaves.length, 2);
+  ok(
     leaves.some((l) => l._rev === g2a._rev) &&
       leaves.some((l) => l._rev === g2b._rev),
   );
@@ -238,9 +240,9 @@ test("winner selection - prefers non-deleted over deleted", () => {
   bulkInsert(store, [g1, live, tomb]);
 
   const resolved = getResolved(store, "k");
-  assertExists(resolved);
-  assertEquals(resolved.winner._rev, live._rev);
-  assertEquals(resolved.conflicts, [tomb._rev]);
+  ok(resolved);
+  deepStrictEqual(resolved.winner._rev, live._rev);
+  deepStrictEqual(resolved.conflicts, [tomb._rev]);
 });
 
 test("winner selection - higher gen wins among non-deleted leaves", () => {
@@ -257,9 +259,9 @@ test("winner selection - higher gen wins among non-deleted leaves", () => {
   bulkInsert(store, [g1, g2, g3, g2Fork]);
 
   const resolved = getResolved(store, "k");
-  assertExists(resolved);
-  assertEquals(resolved.winner._rev, g3._rev);
-  assertEquals(resolved.conflicts, [g2Fork._rev]);
+  ok(resolved);
+  deepStrictEqual(resolved.winner._rev, g3._rev);
+  deepStrictEqual(resolved.conflicts, [g2Fork._rev]);
 });
 
 test("winner selection - gen is ordered numerically, not lexicographically (gen 11 beats gen 2)", () => {
@@ -287,9 +289,9 @@ test("winner selection - gen is ordered numerically, not lexicographically (gen 
   bulkInsert(store, [...chain, sibling]);
 
   const resolved = getResolved(store, "k");
-  assertExists(resolved);
-  assertEquals(resolved.winner._rev, parent._rev);
-  assert(resolved.winner._rev.startsWith("11-"));
+  ok(resolved);
+  deepStrictEqual(resolved.winner._rev, parent._rev);
+  ok(resolved.winner._rev.startsWith("11-"));
 });
 
 test("winner selection - tiebreak on lexicographic hash among same-gen siblings", () => {
@@ -309,13 +311,13 @@ test("winner selection - tiebreak on lexicographic hash among same-gen siblings"
   });
   bulkInsert(store, [g1, a, b]);
   const resolved = getResolved(store, "k");
-  assertExists(resolved);
+  ok(resolved);
   const aHash = parseRev(a._rev).hash;
   const bHash = parseRev(b._rev).hash;
   const expectedWinner = aHash < bHash ? a._rev : b._rev;
   const expectedLoser = aHash < bHash ? b._rev : a._rev;
-  assertEquals(resolved.winner._rev, expectedWinner);
-  assertEquals(resolved.conflicts, [expectedLoser]);
+  deepStrictEqual(resolved.winner._rev, expectedWinner);
+  deepStrictEqual(resolved.conflicts, [expectedLoser]);
 });
 
 test("bulkInsert - rejects a doc whose _rev does not match its content", () => {
@@ -326,9 +328,9 @@ test("bulkInsert - rejects a doc whose _rev does not match its content", () => {
     n: 999,
   };
   const result = bulkInsert(store, [good, tampered]);
-  assertEquals(result.inserted, 1);
-  assertEquals(result.rejected.length, 1);
-  assertEquals(result.rejected[0].rev, tampered._rev);
+  deepStrictEqual(result.inserted, 1);
+  deepStrictEqual(result.rejected.length, 1);
+  deepStrictEqual(result.rejected[0].rev, tampered._rev);
 });
 
 test("bulkInsert - accepts docs with missing ancestors (no enforcement)", () => {
@@ -340,12 +342,12 @@ test("bulkInsert - accepts docs with missing ancestors (no enforcement)", () => 
     orphan: true,
   });
   const result = bulkInsert(store, [orphan]);
-  assertEquals(result.inserted, 1);
-  assertEquals(result.rejected, []);
+  deepStrictEqual(result.inserted, 1);
+  deepStrictEqual(result.rejected, []);
 
   const leaves = getLeaves(store, "k");
-  assertEquals(leaves.length, 1);
-  assertEquals(leaves[0]._rev, orphan._rev);
+  deepStrictEqual(leaves.length, 1);
+  deepStrictEqual(leaves[0]._rev, orphan._rev);
 });
 
 test("bulkInsert - duplicate _rev is a skip, not an error", () => {
@@ -353,9 +355,9 @@ test("bulkInsert - duplicate _rev is a skip, not an error", () => {
   const g1 = buildDoc({ _id: "k", _gen: 1, n: 1 });
   const first = bulkInsert(store, [g1]);
   const second = bulkInsert(store, [g1]);
-  assertEquals(first.inserted, 1);
-  assertEquals(second.inserted, 0);
-  assertEquals(second.skipped, 1);
+  deepStrictEqual(first.inserted, 1);
+  deepStrictEqual(second.inserted, 0);
+  deepStrictEqual(second.skipped, 1);
 });
 
 test("changesSince - returns all revisions in _local_seq order", () => {
@@ -365,13 +367,13 @@ test("changesSince - returns all revisions in _local_seq order", () => {
   const b1 = put(store, { _id: "b", n: 10 });
 
   const all = changesSince(store, 0);
-  assertEquals(
+  deepStrictEqual(
     all.map((r) => r._rev),
     [g1._rev, g2._rev, b1._rev],
   );
 
   const sinceG2 = changesSince(store, g2._local_seq);
-  assertEquals(
+  deepStrictEqual(
     sinceG2.map((r) => r._rev),
     [b1._rev],
   );
@@ -387,10 +389,10 @@ test("validation - rejects writes that violate the registered schema", () => {
     required: ["title"],
     additionalProperties: false,
   });
-  assertThrows(() => put(store, { _id: "n1", _type: "note" }), ValidationError);
+  throws(() => put(store, { _id: "n1", _type: "note" }), ValidationError);
   const ok = put(store, { _id: "n1", _type: "note", title: "hi" });
-  assertEquals(parseRev(ok._rev).gen, 1);
-  assertEquals(ok.title, "hi");
+  deepStrictEqual(parseRev(ok._rev).gen, 1);
+  deepStrictEqual(ok.title, "hi");
 });
 
 test("validation - schema evolution: updating the schema changes validation", () => {
@@ -413,7 +415,7 @@ test("validation - schema evolution: updating the schema changes validation", ()
     required: ["name", "qty"],
   });
 
-  assertThrows(
+  throws(
     () => put(store, { _id: "i2", _type: "item", name: "y" }),
     ValidationError,
   );
@@ -433,7 +435,7 @@ test("validation - _schema documents are never self-validated", () => {
 test("validation - _type with no registered schema is a no-op (permits writes)", () => {
   const store = freshValidatingStore();
   const doc = put(store, { _id: "m1", _type: "mystery", x: 1 });
-  assertEquals(parseRev(doc._rev).gen, 1);
+  deepStrictEqual(parseRev(doc._rev).gen, 1);
 });
 
 test("replication - schemas propagate, and subsequent puts validate", () => {
@@ -449,16 +451,16 @@ test("replication - schemas propagate, and subsequent puts validate", () => {
   const sourceB = freshValidatingStore();
   const changes = changesSince(sourceA, 0);
   const result = bulkInsert(sourceB, changes as unknown as BulkDocument[]);
-  assertEquals(result.inserted, 1);
+  deepStrictEqual(result.inserted, 1);
 
-  assertThrows(
+  throws(
     () => put(sourceB, { _id: "p1", _type: "post" }),
     ValidationError,
   );
   const good = put(sourceB, { _id: "p1", _type: "post", body: "hello" });
-  assertEquals(parseRev(good._rev).gen, 1);
+  deepStrictEqual(parseRev(good._rev).gen, 1);
 
-  assertEquals(getRevision(sourceB, schemaDoc._rev)?._rev, schemaDoc._rev);
+  deepStrictEqual(getRevision(sourceB, schemaDoc._rev)?._rev, schemaDoc._rev);
 });
 
 test("round-trip - doc from get can be replayed via bulkInsert on a fresh store", () => {
@@ -467,13 +469,13 @@ test("round-trip - doc from get can be replayed via bulkInsert on a fresh store"
 
   const b = freshStore();
   const result = bulkInsert(b, [original as unknown as BulkDocument]);
-  assertEquals(result.inserted, 1);
+  deepStrictEqual(result.inserted, 1);
 
   const onB = get(b, "x");
-  assertExists(onB);
-  assertEquals(onB._rev, original._rev);
-  assertEquals(onB.name, "Alice");
-  assertEquals(onB.age, 30);
+  ok(onB);
+  deepStrictEqual(onB._rev, original._rev);
+  deepStrictEqual(onB.name, "Alice");
+  deepStrictEqual(onB.age, 30);
 });
 
 test("replica convergence - identical write sequences produce identical _revs", () => {
@@ -483,6 +485,6 @@ test("replica convergence - identical write sequences produce identical _revs", 
   const a2 = put(a, { _id: "k", x: 2, _parent: a1._rev });
   const b1 = put(b, { _id: "k", x: 1 });
   const b2 = put(b, { _id: "k", x: 2, _parent: b1._rev });
-  assertEquals(a1._rev, b1._rev);
-  assertEquals(a2._rev, b2._rev);
+  deepStrictEqual(a1._rev, b1._rev);
+  deepStrictEqual(a2._rev, b2._rev);
 });

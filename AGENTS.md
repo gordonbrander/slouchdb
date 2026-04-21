@@ -12,7 +12,7 @@ Write pragmatic functional TypeScript. Prefer pure functions and data over class
 - Storage: `node:sqlite` (built-in)
 - Design system: [DUI](https://github.com/deepfuturenow/dui) (npm packages `@deepfuture/dui-*`)
 - Build system: ESBuild (bundler scripts in `scripts/`)
-- Testing: Node's built-in test runner (`node --test`). Assertions via `node:assert` (wrapped by `util/test-helpers.ts`).
+- Testing: Node's built-in test runner (`node --test`). Assertions via `node:assert/strict`.
 
 ## Project structure
 
@@ -66,7 +66,7 @@ Components follow "data down, events up". Most components are vanilla Lit (recei
 - Use Node's built-in test runner (`node --test`)
 - Put tests next to source code (e.g. `foo.test.ts` next to `foo.ts`), not in a separate test directory
 - Tests should be named `foo.test.ts`, not `foo_test.ts`
-- Import the Deno-compatible assertion shims from `util/test-helpers.ts` (`assertEquals`, `assertExists`, `assertThrows`, etc.) — these wrap `node:assert`.
+- Import assertions directly from `node:assert/strict` (`deepStrictEqual`, `ok`, `throws`, `rejects`, etc.).
 
 ## DUI
 

@@ -1,5 +1,5 @@
 import { test } from "node:test";
-import { assert, assertThrows } from "./test-helpers.ts";
+import { ok, throws } from "node:assert/strict";
 import { openStore, parseRev, put, type PendingDocument } from "./store.ts";
 import { clearSchemaCache, validate } from "./validate.ts";
 import { ValidationError } from "./errors.ts";
@@ -31,7 +31,7 @@ test("validate - tombstoned schema is treated as absent", () => {
     required: ["x"],
     properties: { x: { type: "string" } },
   });
-  assertThrows(
+  throws(
     () => validate(store, "thing", pending({ _id: "t1" })),
     ValidationError,
   );
@@ -68,8 +68,8 @@ test("validate - caches compiled zod by schema-doc _rev; invalidates on update",
       flips: { type: "number" },
     },
   });
-  assert(parseRev(s2._rev).gen === 2);
-  assertThrows(
+  ok(parseRev(s2._rev).gen === 2);
+  throws(
     () => validate(store, "coin", pending({ _id: "c3", side: "heads" })),
     ValidationError,
   );
