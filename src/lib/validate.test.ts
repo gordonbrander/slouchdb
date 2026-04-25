@@ -1,13 +1,15 @@
 import { test } from "node:test";
 import { deepStrictEqual, ok } from "node:assert/strict";
+import * as z from "zod/v4";
 import {
   bulkInsert,
   changesSince,
   openStore,
+  parseRev,
   put,
   type BulkDocument,
 } from "./store.ts";
-import { clearSchemaCache, getSchema } from "./validate.ts";
+import { clearSchemaCache, getSchema, putSchema } from "./validate.ts";
 
 test("getSchema - unknown type returns undefined", () => {
   clearSchemaCache();
@@ -82,6 +84,39 @@ test("getSchema - caches by schema-doc _rev; recompiles when the schema is updat
   ok(c !== a);
   deepStrictEqual(c?.safeParse({ side: "heads" }).success, false);
   deepStrictEqual(c?.safeParse({ side: "heads", flips: 3 }).success, true);
+});
+
+test("putSchema - genesis write registers a schema that getSchema returns", () => {
+  clearSchemaCache();
+  const store = openStore(":memory:");
+  const note = z.object({ title: z.string() });
+  const written = putSchema(store, "note", note);
+  deepStrictEqual(written._id, "_schema/note");
+  deepStrictEqual(written._type, "_schema");
+  deepStrictEqual(parseRev(written._rev).gen, 1);
+
+  const compiled = getSchema(store, "note");
+  ok(compiled);
+  deepStrictEqual(compiled.safeParse({ title: "hi" }).success, true);
+  deepStrictEqual(compiled.safeParse({}).success, false);
+});
+
+test("putSchema - subsequent calls extend the schema chain linearly", () => {
+  clearSchemaCache();
+  const store = openStore(":memory:");
+  const v1 = putSchema(store, "item", z.object({ name: z.string() }));
+  const v2 = putSchema(
+    store,
+    "item",
+    z.object({ name: z.string(), qty: z.number() }),
+  );
+  deepStrictEqual(parseRev(v2._rev).gen, 2);
+  deepStrictEqual(v2._parent, v1._rev);
+
+  const compiled = getSchema(store, "item");
+  ok(compiled);
+  deepStrictEqual(compiled.safeParse({ name: "x" }).success, false);
+  deepStrictEqual(compiled.safeParse({ name: "x", qty: 3 }).success, true);
 });
 
 test("getSchema - schemas propagate via replication; downstream getSchema sees them", () => {
