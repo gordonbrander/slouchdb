@@ -44,7 +44,7 @@ export const resolve = (
 
   const losers = getRevisionBulk(store, r.conflicts).documents;
 
-  return savepoint(store.db, "resolve", () => {
+  return savepoint(store, "resolve", () => {
     const merged = put(store, {
       ...reconcile([r.winner, ...losers]),
       _id: id,
