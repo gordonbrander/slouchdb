@@ -2,20 +2,24 @@
 
 ## Context
 
-slouchdb today has content-addressed hashing (`src/cid.ts`) and a
-JSONSchema resolver (`src/schema-resolver.ts`), plus a working storage
-layer. The goal is the project's core: a local document
-store with CouchDB semantics — revision trees, optimistic concurrency,
-deterministic conflict-winner selection, per-type JSONSchema validation, and a
+slouchdb is a local document store with CouchDB semantics — revision trees,
+optimistic concurrency, deterministic conflict-winner selection, and a
 changes feed that supports replication from/to another slouchdb instance.
+Per-type JSONSchema validation is provided as a separate, opt-in helper
+(`src/validate.ts`) — the store itself is schema-agnostic.
 
-Scope per user direction:
+Scope:
 
 - **Include replication** — bulk-insert API that creates forks, changes feed
   with sequence numbers.
 - **Schemas are documents** — no separate `schemas` table; schemas live in the
   `documents` table under a reserved type and key convention, so they
   participate in MVCC and replicate like any other document.
+- **Validation is decoupled from the store** — the store does not call into
+  the validator. Callers fetch a compiled schema via `getSchema` and validate
+  before `put`. Rationale: replication must never stall on a typed document
+  whose schema hasn't replicated yet, and consumers may want to enforce,
+  warn, or skip on their own terms.
 - **Sync API** — `node:sqlite` is synchronous; match it, no Promise wrapper.
 - **Reserved field names mirror CouchDB** where concepts align: `_id`, `_rev`,
   `_deleted`, with `_parent` naming the parent revision explicitly.
@@ -90,9 +94,13 @@ Schemas live in the same table. Conventions:
 - Schema documents themselves are **not** schema-validated — there is no
   registered schema for `_schema` and introducing a meta-schema is out of
   scope for v1.
-- To validate a write with `_type = "foo"`: look up the winning revision of
-  `_id = "_schema/foo"`; if it exists and is not a tombstone, compile with
-  `z.fromJSONSchema` and validate the user-data portion.
+- To validate a write with `_type = "foo"`: callers use
+  `getSchema(store, "foo")` (from `src/validate.ts`) — it looks up the
+  winning revision of `_id = "_schema/foo"`, and if it exists and is not a
+  tombstone, returns it compiled via `z.fromJSONSchema`. The caller does
+  whatever they want with the result (typically `safeParse` against the
+  document's user-data portion before `put`). The store itself never calls
+  the validator.
 
 Because schema docs are versioned under the same MVCC, schema evolution is
 just another write; replication ships schemas alongside data.
@@ -105,9 +113,9 @@ Documents are read and written as flattened objects — reserved fields sit
 alongside user data at the top level.
 
 ```ts
-import { DatabaseSync } from "node:sqlite";
+import { type DatabaseSync } from "node:sqlite";
 
-export type Store = { db: DatabaseSync; validate: Validator };
+export type Store = DatabaseSync;
 
 export type Document = {
   _local_seq: number;
@@ -136,19 +144,36 @@ export type BulkDocument = {
   [field: string]: unknown;
 };
 
-export const openStore = (
-  path: string,
-  opts?: { validate?: Validator },
-): Store;
+export const RESERVED: ReadonlySet<string>;
+
+export const openStore = (path: string): Store;
 export const closeStore = (store: Store): void;
 
 // Compose / parse the "<gen>-<hash>" _rev format.
 export const formatRev = (gen: number, hash: string): string;
 export const parseRev = (rev: string): { gen: number; hash: string };
 
+// Strip reserved fields from a doc-shaped record. Reused by callers that
+// build BulkDocuments by hand (see `revisionHash`).
+export const extractData = (
+  doc: Record<string, unknown>,
+): Record<string, unknown>;
+
+// Compute the bare hash for a revision. Callers compose the full _rev via
+// `formatRev`. Useful for tests and tools that synthesize BulkDocuments.
+export const revisionHash = (input: {
+  _id: string;
+  _gen: number;
+  _parent: string | undefined;
+  _type: string | undefined;
+  _deleted: boolean;
+  data: Record<string, unknown>;
+}): string;
+
 // Optimistic-concurrency write. Extends one leaf. Returns the new document.
-// Throws ConflictError if _parent is not a current leaf.
-// Throws ValidationError if _type is set and data fails schema check.
+// Throws ConflictError if _parent is not a current leaf. The store itself
+// performs no schema validation — that is the caller's responsibility (see
+// `src/validate.ts`).
 export const put = (store: Store, input: PutInput): Document;
 
 // Convenience: creates a tombstone extending parentRev.
@@ -161,18 +186,44 @@ export const get = (store: Store, id: string): Document | undefined;
 // Returns a specific revision by _rev, regardless of leaf status.
 export const getRevision = (store: Store, rev: string): Document | undefined;
 
+// Bulk fetch. Returns matched documents in input order plus any unknown
+// revs. Duplicate input revs duplicate in `documents`; `missing` is deduped.
+export type GetRevisionBulkReceipt = {
+  documents: Document[];
+  missing: string[];
+};
+export const getRevisionBulk = (
+  store: Store,
+  revs: readonly string[],
+): GetRevisionBulkReceipt;
+
 // All current leaves for an id. Used to detect conflicts.
 export const getLeaves = (store: Store, id: string): Document[];
 
-// Winner + _revs of losing leaves (CouchDB's ?conflicts=true shape).
-export type Resolved = { winner: Document; conflicts: string[] };
+// Winner + losing leaves split by deletion status. Mirrors CouchDB's
+// ?conflicts=true (`_conflicts`) and ?deleted_conflicts=true
+// (`_deleted_conflicts`) read shapes. The doc is "in conflict" exactly when
+// `conflicts.length > 0`.
+export type Resolved = {
+  winner: Document;
+  conflicts: string[];          // live (non-tombstone) losing leaves
+  deletedConflicts: string[];   // tombstone leaves
+};
 export const getResolved = (store: Store, id: string): Resolved | undefined;
+
+// Walk the parent chain leaf-to-root. Default start is the winner of `id`.
+// Stops at the first missing ancestor. Empty if `id` is unknown, the
+// supplied `rev` is unknown, or `rev` belongs to a different document.
+export const getHistory = (
+  store: Store,
+  id: string,
+  rev?: string,
+): Document[];
 
 // Replication-style bulk insert. Bypasses the leaf check; creates forks.
 // Each revision's _rev is reparsed and its hash recomputed against the
-// supplied fields; tampered rows are rejected. Schema validation is NOT
-// run here — replication must not stall because the local replica hasn't
-// received the schema yet.
+// supplied fields; tampered rows are rejected (tracked, not thrown).
+// Missing ancestors are permitted.
 export type BulkResult = {
   inserted: number;
   skipped: number;
@@ -184,31 +235,85 @@ export const bulkInsert = (
 ): BulkResult;
 
 // Changes feed. All revisions with _local_seq > since, in order.
-// This is "style: all_docs" semantics — every leaf shows up.
+// This is "style: all_docs" semantics — every revision shows up.
 export const changesSince = (store: Store, since: number): Document[];
 ```
 
 ### `src/validate.ts`
 
-Separated so `store.ts` doesn't import zod:
+Optional, opt-in validation helper. Separated so `store.ts` doesn't import
+zod and the store remains schema-agnostic.
 
 ```ts
 import * as z from "zod/v4";
-import { type Store, type PendingDocument } from "./store.ts";
+import { type Document, type Store } from "./store.ts";
 
-// Compiles and caches zod schemas keyed by the schema document's _rev.
-// Content-addressed cache: when the schema doc changes, its _rev changes,
-// and a new compiled schema is built on the next call.
-export const validate = (
+// Look up the registered schema for `type` and return it as a compiled Zod
+// schema. Reads the winning revision of `_schema/<type>`; returns undefined
+// if no such document exists or the schema has been tombstoned. Compiled
+// schemas are cached by the schema document's `_rev` (content-addressed —
+// the cache invalidates automatically when the schema changes).
+export const getSchema = (
   store: Store,
   type: string,
-  doc: PendingDocument,
-): void;
+): z.ZodType | undefined;
+
+// Register or update the schema for `type`. Converts `zodSchema` to JSON
+// Schema and writes it as the `_schema/<type>` document. Subsequent calls
+// extend the schema chain linearly (parented on the current winning leaf,
+// including a tombstone if the schema was previously deleted).
+export const putSchema = (
+  store: Store,
+  type: string,
+  zodSchema: z.ZodType,
+  _parent?: string,
+): Document;
+
+// Test-only escape hatch.
+export const clearSchemaCache = (): void;
 ```
 
-`store.put` calls `validate(store, _type, pending)` before insert when `_type`
-is set and is not `"_schema"`. A failure throws `ValidationError` and the
-transaction is rolled back.
+Typical caller flow:
+
+```ts
+const schema = getSchema(store, doc._type);
+const parsed = schema?.safeParse(extractData(doc));
+if (parsed && !parsed.success) throw parsed.error;
+put(store, doc);
+```
+
+Returning `undefined` for missing schemas means clients naturally tolerate a
+freshly replicated database that holds typed documents whose schemas have
+not yet replicated in. Enforcement happens once the schema is known — the
+caller picks the policy.
+
+### `src/resolve.ts`
+
+Conflict-resolution helper. Lives outside the store so the store stays small
+and the merge policy is pluggable.
+
+```ts
+import { type Document, type PutInput, type Store } from "./store.ts";
+
+// Receives all live leaves in canonical order [winner, ...losers] and
+// returns the merged content. The caller (`resolve`) overrides _id and
+// _parent on the result.
+export type Reconciler = (leaves: readonly Document[]) => PutInput;
+
+// Atomically: write the merged document under the winner's branch, then
+// tombstone every live losing leaf. No-op (returns the existing winner)
+// when there are no live conflicts. Undefined if `id` is absent.
+//
+// Determinism: leaves are passed in `_deleted ASC, _rev_gen DESC,
+// _rev_hash ASC` order, anchored on the winner's _rev. Two replicas
+// running the same reconciler over the same leaves produce the same
+// merge _rev.
+export const resolve = (
+  store: Store,
+  id: string,
+  reconcile: Reconciler,
+): Document | undefined;
+```
 
 ### `src/errors.ts`
 
@@ -216,19 +321,20 @@ transaction is rolled back.
 export class ConflictError extends Error {
   /* has .id, .expectedParent, .actualLeaves */
 }
-export class ValidationError extends Error {
-  /* has .issues */
-}
 export class IntegrityError extends Error {
-  /* bulkInsert hash mismatch */
+  /* bulkInsert hash mismatch — has .providedHash, .computedHash */
 }
 ```
+
+There is no `ValidationError`: the store does not validate. Callers that
+opt in to schema validation surface zod's own `ZodError` (or whatever they
+wrap it in) at their own layer.
 
 ## Behavior details
 
 ### `put`
 
-Wrap in a `BEGIN IMMEDIATE` transaction:
+Wrapped in a `savepoint`:
 
 1. Look up current leaves of `_id`.
 2. Derive generation:
@@ -237,12 +343,15 @@ Wrap in a `BEGIN IMMEDIATE` transaction:
 3. Compute `hash = cid({ _id, _gen, _parent, _type, _deleted, ...data })`
    and compose `_rev = formatRev(_gen, hash)`.
 4. Idempotence: if a row with this `_rev` already exists, commit and return it.
-5. If `_type` is set and `_type !== "_schema"`: run `validate` (throws on failure).
-6. Leaf check:
+5. Leaf check:
    - Genesis: `leaves.length === 0` or throw `ConflictError`.
    - Extension: `_parent` must equal one current leaf's `_rev` or throw.
-7. `INSERT OR IGNORE` the row, then re-fetch by `_rev` to pick up `_local_seq`.
-8. Return the full `Document`.
+6. `INSERT OR IGNORE` the row, then re-fetch by `_rev` to pick up `_local_seq`.
+7. Return the full `Document`.
+
+`put` performs no schema validation. Callers that want validation should
+fetch a compiled schema via `getSchema(store, _type)` and `safeParse` the
+user-data portion of the input before calling `put`.
 
 ### `bulkInsert`
 
@@ -255,9 +364,9 @@ Replication ingress. For each input revision:
    insert anyway (CouchDB allows missing ancestors; they may arrive later).
    Note: we do **not** attempt stemming / ancestor pruning in v1.
 4. `INSERT OR IGNORE`. Count `changes()` toward `inserted`, else `skipped`.
-5. Schema validation is skipped entirely in this path.
 
-Wrap the whole batch in a single transaction.
+The store performs no schema validation in any path; `bulkInsert` is no
+exception. Wrap the whole batch in a single transaction (savepoint).
 
 ### `changesSince`
 
@@ -279,17 +388,20 @@ revision is emitted, which is CouchDB's `style=all_docs`.
 
 ## File layout
 
-- `src/sqlite.ts` — `openDatabase(path, migrations)`, migration runner.
+- `src/sqlite.ts` — `openDatabase(path, migrations)` and `savepoint(...)`.
   Migrations are plain SQL strings in an array; runner tracks applied
   versions in a `_migrations` table.
 - `src/store.ts` — types + all document APIs listed above.
 - `src/store.test.ts` — unit tests.
-- `src/validate.ts` — schema-cache + `validate(store, type, doc)`.
+- `src/validate.ts` — `getSchema` / `putSchema` (opt-in JSONSchema helper).
 - `src/validate.test.ts` — unit tests.
+- `src/resolve.ts` — `resolve(store, id, reconcile)` conflict-merge helper.
+- `src/resolve.test.ts` — unit tests.
 - `src/errors.ts` — error classes.
-- `src/test-helpers.ts` — thin wrappers over `node:assert`:
-  `assertEquals`, `assertNotEquals`, `assertStrictEquals`, `assert`,
-  `assertRejects`, `assertThrows`, `assertExists`.
+- `src/index.ts` — re-exports `./store` and `./errors`. The `validate` and
+  `resolve` modules are reached via subpath exports (`slouchdb/validate`,
+  `slouchdb/resolve`) so consumers that don't need them don't pay the cost
+  of importing zod.
 
 Reuse:
 
@@ -330,24 +442,41 @@ Use `node --test src/*.test.ts`. Co-locate, match existing style.
   order; `changesSince(lastSeq)` returns only new ones.
 - **Replica convergence**: identical write sequences on two fresh stores
   produce identical `_rev`s.
-- **Schema validation on put**: register `_schema/note` with a JSONSchema
-  requiring `title: string`; a put without `title` throws `ValidationError`;
-  a put with `title` succeeds.
-- **Schema evolution**: update `_schema/note` to a stricter version;
-  subsequent puts validate against the new schema.
-- **Schema docs are not self-validated**: writing an arbitrary JSONSchema at
-  `_schema/x` with `_type = "_schema"` succeeds without a meta-schema.
-- **Replication of schemas**: `bulkInsert` a schema revision; a subsequent
-  `put` of that type validates against the replicated schema.
+- **Schema docs participate in MVCC**: writing an arbitrary JSONSchema at
+  `_schema/x` with `_type = "_schema"` succeeds; the store does not treat
+  schema documents specially at write time.
 
 ### `validate.test.ts`
 
-- Cache hit: two calls with the same schema-doc `_rev` reuse the compiled zod.
+- `getSchema` for an unknown type returns `undefined`.
+- `getSchema` for a tombstoned schema returns `undefined`.
+- The compiled schema returned by `getSchema` accepts/rejects user data via
+  `safeParse` per the JSONSchema (incl. `additionalProperties: false`).
+- Cache hit: two calls with the same schema-doc `_rev` return the same
+  compiled instance.
 - Cache invalidation on schema update: put a new schema revision → the old
-  compiled zod is not reused.
-- Unknown type → no schema doc → treated as "no validation" (store writes it).
-  Rationale: avoids blocking replication where schemas arrive later;
-  enforcement happens when the schema exists.
+  compiled instance is not reused; the new one enforces the new shape.
+- `putSchema` round-trip: a Zod schema written via `putSchema` is readable
+  via `getSchema`.
+- `putSchema` linearizes: subsequent calls extend the schema chain
+  (`_parent` resolves to the current winner).
+- Replication: `bulkInsert`-ing a schema revision into a downstream replica
+  makes `getSchema` return the same enforcement on that replica.
+
+### `resolve.test.ts`
+
+- Missing doc → `undefined`.
+- No live conflict → returns the existing winner; reconciler not called;
+  leaf set unchanged.
+- Two-leaf conflict: merged revision is a child of the previous winner;
+  losing leaf is tombstoned; new winner is the merge.
+- Reconciler sees `[winner, ...losers]` in canonical order.
+- Three-leaf conflict: one live leaf afterwards, two tombstones.
+- Determinism: same reconciler on two replicas produces the same merge `_rev`.
+- Reconciler throw rolls back: leaf set unchanged.
+- Reconciler returning a different `_id` is overridden (caller can't escape
+  the targeted document).
+- Doc with only `deletedConflicts` (no live competitors) is a no-op.
 
 ## Verification
 
