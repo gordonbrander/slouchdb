@@ -2,8 +2,8 @@
 
 ## Context
 
-slouchdb today has content-addressed hashing (`src/lib/cid.ts`) and a
-JSONSchema resolver (`src/lib/schema-resolver.ts`), plus a working storage
+slouchdb today has content-addressed hashing (`src/cid.ts`) and a
+JSONSchema resolver (`src/schema-resolver.ts`), plus a working storage
 layer. The goal is the project's core: a local document
 store with CouchDB semantics — revision trees, optimistic concurrency,
 deterministic conflict-winner selection, per-type JSONSchema validation, and a
@@ -99,7 +99,7 @@ just another write; replication ships schemas alongside data.
 
 ## API surface (all synchronous)
 
-### `src/lib/store.ts`
+### `src/store.ts`
 
 Documents are read and written as flattened objects — reserved fields sit
 alongside user data at the top level.
@@ -188,7 +188,7 @@ export const bulkInsert = (
 export const changesSince = (store: Store, since: number): Document[];
 ```
 
-### `src/lib/validate.ts`
+### `src/validate.ts`
 
 Separated so `store.ts` doesn't import zod:
 
@@ -210,7 +210,7 @@ export const validate = (
 is set and is not `"_schema"`. A failure throws `ValidationError` and the
 transaction is rolled back.
 
-### `src/lib/errors.ts`
+### `src/errors.ts`
 
 ```ts
 export class ConflictError extends Error {
@@ -279,25 +279,25 @@ revision is emitted, which is CouchDB's `style=all_docs`.
 
 ## File layout
 
-- `src/lib/sqlite.ts` — `openDatabase(path, migrations)`, migration runner.
+- `src/sqlite.ts` — `openDatabase(path, migrations)`, migration runner.
   Migrations are plain SQL strings in an array; runner tracks applied
   versions in a `_migrations` table.
-- `src/lib/store.ts` — types + all document APIs listed above.
-- `src/lib/store.test.ts` — unit tests.
-- `src/lib/validate.ts` — schema-cache + `validate(store, type, doc)`.
-- `src/lib/validate.test.ts` — unit tests.
-- `src/lib/errors.ts` — error classes.
-- `src/lib/test-helpers.ts` — thin wrappers over `node:assert`:
+- `src/store.ts` — types + all document APIs listed above.
+- `src/store.test.ts` — unit tests.
+- `src/validate.ts` — schema-cache + `validate(store, type, doc)`.
+- `src/validate.test.ts` — unit tests.
+- `src/errors.ts` — error classes.
+- `src/test-helpers.ts` — thin wrappers over `node:assert`:
   `assertEquals`, `assertNotEquals`, `assertStrictEquals`, `assert`,
   `assertRejects`, `assertThrows`, `assertExists`.
 
 Reuse:
 
-- `src/lib/cid.ts` — `cid()` for revision hashes; do **not** reimplement.
+- `src/cid.ts` — `cid()` for revision hashes; do **not** reimplement.
 
 ## Test plan
 
-Use `node --test src/lib/*.test.ts`. Co-locate, match existing style.
+Use `node --test src/*.test.ts`. Co-locate, match existing style.
 
 ### `store.test.ts`
 

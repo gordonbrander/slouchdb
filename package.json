@@ -5,7 +5,13 @@
   "license": "MIT",
   "author": "Gordon Brander",
   "type": "module",
-  "main": "index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./store": "./src/store.ts",
+    "./errors": "./src/errors.ts",
+    "./validate": "./src/validate.ts",
+    "./resolve": "./src/resolve.ts"
+  },
   "scripts": {
     "lint": "eslint .",
     "fmt": "prettier --write .",
