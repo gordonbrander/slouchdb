@@ -20,15 +20,9 @@ import {
   type BulkDocument,
   type Store,
 } from "./store.ts";
-import { ConflictError, ValidationError } from "./errors.ts";
-import { clearSchemaCache, validate } from "./validate.ts";
+import { ConflictError } from "./errors.ts";
 
 const freshStore = (): Store => openStore(":memory:");
-
-const freshValidatingStore = (): Store => {
-  clearSchemaCache();
-  return openStore(":memory:", { validate });
-};
 
 type BuildDocInput = {
   _id: string;
@@ -455,87 +449,6 @@ test("changesSince - returns all revisions in _local_seq order", () => {
     sinceG2.map((r) => r._rev),
     [b1._rev],
   );
-});
-
-test("validation - rejects writes that violate the registered schema", () => {
-  const store = freshValidatingStore();
-  put(store, {
-    _id: "_schema/note",
-    _type: "_schema",
-    type: "object",
-    properties: { title: { type: "string" } },
-    required: ["title"],
-    additionalProperties: false,
-  });
-  throws(() => put(store, { _id: "n1", _type: "note" }), ValidationError);
-  const ok = put(store, { _id: "n1", _type: "note", title: "hi" });
-  deepStrictEqual(parseRev(ok._rev).gen, 1);
-  deepStrictEqual(ok.title, "hi");
-});
-
-test("validation - schema evolution: updating the schema changes validation", () => {
-  const store = freshValidatingStore();
-  const s1 = put(store, {
-    _id: "_schema/item",
-    _type: "_schema",
-    type: "object",
-    properties: { name: { type: "string" } },
-    required: ["name"],
-  });
-  put(store, { _id: "i1", _type: "item", name: "x" });
-
-  put(store, {
-    _id: "_schema/item",
-    _type: "_schema",
-    _parent: s1._rev,
-    type: "object",
-    properties: { name: { type: "string" }, qty: { type: "number" } },
-    required: ["name", "qty"],
-  });
-
-  throws(
-    () => put(store, { _id: "i2", _type: "item", name: "y" }),
-    ValidationError,
-  );
-  put(store, { _id: "i2", _type: "item", name: "y", qty: 3 });
-});
-
-test("validation - _schema documents are never self-validated", () => {
-  const store = freshValidatingStore();
-  put(store, {
-    _id: "_schema/anything",
-    _type: "_schema",
-    any: "json",
-    at: ["all"],
-  });
-});
-
-test("validation - _type with no registered schema is a no-op (permits writes)", () => {
-  const store = freshValidatingStore();
-  const doc = put(store, { _id: "m1", _type: "mystery", x: 1 });
-  deepStrictEqual(parseRev(doc._rev).gen, 1);
-});
-
-test("replication - schemas propagate, and subsequent puts validate", () => {
-  const sourceA = freshValidatingStore();
-  const schemaDoc = put(sourceA, {
-    _id: "_schema/post",
-    _type: "_schema",
-    type: "object",
-    properties: { body: { type: "string" } },
-    required: ["body"],
-  });
-
-  const sourceB = freshValidatingStore();
-  const changes = changesSince(sourceA, 0);
-  const result = bulkInsert(sourceB, changes as unknown as BulkDocument[]);
-  deepStrictEqual(result.inserted, 1);
-
-  throws(() => put(sourceB, { _id: "p1", _type: "post" }), ValidationError);
-  const good = put(sourceB, { _id: "p1", _type: "post", body: "hello" });
-  deepStrictEqual(parseRev(good._rev).gen, 1);
-
-  deepStrictEqual(getRevision(sourceB, schemaDoc._rev)?._rev, schemaDoc._rev);
 });
 
 test("round-trip - doc from get can be replayed via bulkInsert on a fresh store", () => {

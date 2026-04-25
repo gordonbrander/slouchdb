@@ -22,20 +22,6 @@ export class ConflictError extends Error {
   }
 }
 
-export class ValidationError extends Error {
-  override name = "ValidationError";
-  readonly type: string;
-  readonly issues: unknown;
-
-  constructor(type: string, issues: unknown) {
-    super(
-      `validation failed for type ${JSON.stringify(type)}: ${JSON.stringify(issues)}`,
-    );
-    this.type = type;
-    this.issues = issues;
-  }
-}
-
 export class IntegrityError extends Error {
   override name = "IntegrityError";
   readonly providedHash: string;

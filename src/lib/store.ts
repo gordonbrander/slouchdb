@@ -24,9 +24,6 @@ export type Document = {
   [field: string]: unknown;
 };
 
-/** The doc-shape passed to a validator, before DB-assigned fields are set. */
-export type PendingDocument = Omit<Document, "_local_seq">;
-
 /** Input to {@link put}. Unknown reserved fields are ignored. */
 export type PutInput = {
   _id: string;
@@ -65,18 +62,7 @@ export type BulkResult = {
   rejected: Array<{ rev: string; reason: string }>;
 };
 
-export type Validator = (
-  store: Store,
-  type: string,
-  doc: PendingDocument,
-) => void;
-
-export type Store = {
-  db: DatabaseSync;
-  validate: Validator;
-};
-
-const noValidator: Validator = () => {};
+export type Store = DatabaseSync;
 
 const migrations: readonly string[] = [
   `
@@ -98,16 +84,11 @@ const migrations: readonly string[] = [
   `,
 ];
 
-export const openStore = (
-  path: string,
-  opts?: { validate?: Validator },
-): Store => ({
-  db: openDatabase(path, migrations),
-  validate: opts?.validate ?? noValidator,
-});
+export const openStore = (path: string): Store =>
+  openDatabase(path, migrations);
 
 export const closeStore = (store: Store): void => {
-  store.db.close();
+  store.close();
 };
 
 type Row = {
@@ -212,34 +193,21 @@ const changesStmt = (db: DatabaseSync) =>
  * inserting.
  */
 export const put = (store: Store, input: PutInput): Document => {
-  const { db } = store;
   const _id = input._id;
   const _type = input._type;
   const _parent = input._parent;
   const _deleted = input._deleted ?? false;
   const data = extractData(input);
 
-  return savepoint(db, "put", () => {
-    const leaves = leavesByIdStmt(db).all(_id) as Row[];
+  return savepoint(store, "put", () => {
+    const leaves = leavesByIdStmt(store).all(_id) as Row[];
 
     const _gen = _parent === undefined ? 1 : parseRev(_parent).gen + 1;
     const hash = revisionHash({ _id, _gen, _parent, _type, _deleted, data });
     const _rev = formatRev(_gen, hash);
 
-    const existing = getByRevStmt(db).get(_rev) as Row | undefined;
+    const existing = getByRevStmt(store).get(_rev) as Row | undefined;
     if (existing) return rowToDocument(existing);
-
-    if (_type !== undefined && _type !== "_schema") {
-      const pending: PendingDocument = {
-        _id,
-        _rev,
-        _parent,
-        _type,
-        _deleted,
-        ...data,
-      };
-      store.validate(store, _type, pending);
-    }
 
     if (_parent === undefined) {
       if (leaves.length > 0) {
@@ -257,7 +225,7 @@ export const put = (store: Store, input: PutInput): Document => {
       );
     }
 
-    insertStmt(db).run(
+    insertStmt(store).run(
       _rev,
       _id,
       _parent ?? null,
@@ -266,7 +234,7 @@ export const put = (store: Store, input: PutInput): Document => {
       JSON.stringify(data),
     );
 
-    const row = getByRevStmt(db).get(_rev) as Row;
+    const row = getByRevStmt(store).get(_rev) as Row;
     return rowToDocument(row);
   });
 };
@@ -282,7 +250,7 @@ export const remove = (store: Store, id: string, parentRev: string): Document =>
  * `._deleted`.
  */
 export const get = (store: Store, id: string): Document | undefined => {
-  const row = store.db
+  const row = store
     .prepare(
       `
       SELECT d.* FROM documents d
@@ -301,13 +269,13 @@ export const getRevision = (
   store: Store,
   rev: string,
 ): Document | undefined => {
-  const row = getByRevStmt(store.db).get(rev) as Row | undefined;
+  const row = getByRevStmt(store).get(rev) as Row | undefined;
   return row ? rowToDocument(row) : undefined;
 };
 
 /** All current leaves for `_id`. Multiple leaves ⇒ the document is in conflict. */
 export const getLeaves = (store: Store, id: string): Document[] => {
-  const rows = leavesByIdStmt(store.db).all(id) as Row[];
+  const rows = leavesByIdStmt(store).all(id) as Row[];
   return rows.map(rowToDocument);
 };
 
@@ -353,7 +321,7 @@ export const getRevisionBulk = (
 ): GetRevisionBulkReceipt => {
   if (revs.length === 0) return { documents: [], missing: [] };
   const placeholders = revs.map(() => "?").join(",");
-  const rows = store.db
+  const rows = store
     .prepare(`SELECT * FROM documents WHERE _rev IN (${placeholders})`)
     .all(...revs) as Row[];
   const byRev = new Map(rows.map((r) => [r._rev, r]));
@@ -388,7 +356,7 @@ export const getHistory = (
   const startRev = rev ?? get(store, id)?._rev;
   if (startRev === undefined) return [];
   const out: Document[] = [];
-  const stmt = getByRevStmt(store.db);
+  const stmt = getByRevStmt(store);
   let cursor: string | undefined = startRev;
   while (cursor !== undefined) {
     const row = stmt.get(cursor) as Row | undefined;
@@ -404,19 +372,16 @@ export const getHistory = (
  * Replication ingress. Bypasses the leaf check — forks are intentional.
  * Each doc's `_rev` is reparsed and its hash recomputed from the supplied
  * fields; mismatches are rejected (tracked in the result, not thrown).
- * Missing ancestors are permitted. Schema validation is not run here: a
- * batch may carry the schema alongside data that depends on it, and ingest
- * must not stall on order.
+ * Missing ancestors are permitted.
  */
 export const bulkInsert = (
   store: Store,
   docs: readonly BulkDocument[],
 ): BulkResult => {
-  const { db } = store;
   const result: BulkResult = { inserted: 0, skipped: 0, rejected: [] };
 
-  return savepoint(db, "bulk_insert", () => {
-    const stmt = insertStmt(db);
+  return savepoint(store, "bulk_insert", () => {
+    const stmt = insertStmt(store);
     for (const doc of docs) {
       const data = extractData(doc);
       const _deleted = doc._deleted ?? false;
@@ -464,6 +429,6 @@ export const bulkInsert = (
 
 /** All revisions with `_local_seq > since`, in order. Drives replication. */
 export const changesSince = (store: Store, since: number): Document[] => {
-  const rows = changesStmt(store.db).all(since) as Row[];
+  const rows = changesStmt(store).all(since) as Row[];
   return rows.map(rowToDocument);
 };
