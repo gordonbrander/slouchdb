@@ -7,9 +7,11 @@ import {
   extractData,
   formatRev,
   get,
+  getHistory,
   getLeaves,
   getResolved,
   getRevision,
+  getRevisionBulk,
   openStore,
   parseRev,
   put,
@@ -120,10 +122,7 @@ test("put - stale _parent (pointing to former leaf) throws ConflictError", () =>
   const store = freshStore();
   const g1 = put(store, { _id: "k", n: 1 });
   put(store, { _id: "k", n: 2, _parent: g1._rev });
-  throws(
-    () => put(store, { _id: "k", n: 3, _parent: g1._rev }),
-    ConflictError,
-  );
+  throws(() => put(store, { _id: "k", n: 3, _parent: g1._rev }), ConflictError);
 });
 
 test("put - genesis put with a _parent that does not exist throws ConflictError", () => {
@@ -242,7 +241,8 @@ test("winner selection - prefers non-deleted over deleted", () => {
   const resolved = getResolved(store, "k");
   ok(resolved);
   deepStrictEqual(resolved.winner._rev, live._rev);
-  deepStrictEqual(resolved.conflicts, [tomb._rev]);
+  deepStrictEqual(resolved.conflicts, []);
+  deepStrictEqual(resolved.deletedConflicts, [tomb._rev]);
 });
 
 test("winner selection - higher gen wins among non-deleted leaves", () => {
@@ -262,6 +262,7 @@ test("winner selection - higher gen wins among non-deleted leaves", () => {
   ok(resolved);
   deepStrictEqual(resolved.winner._rev, g3._rev);
   deepStrictEqual(resolved.conflicts, [g2Fork._rev]);
+  deepStrictEqual(resolved.deletedConflicts, []);
 });
 
 test("winner selection - gen is ordered numerically, not lexicographically (gen 11 beats gen 2)", () => {
@@ -318,6 +319,83 @@ test("winner selection - tiebreak on lexicographic hash among same-gen siblings"
   const expectedLoser = aHash < bHash ? b._rev : a._rev;
   deepStrictEqual(resolved.winner._rev, expectedWinner);
   deepStrictEqual(resolved.conflicts, [expectedLoser]);
+  deepStrictEqual(resolved.deletedConflicts, []);
+});
+
+test("getResolved - splits live vs deleted leaves into conflicts vs deletedConflicts", () => {
+  const store = freshStore();
+  const g1 = buildDoc({ _id: "k", _gen: 1, n: 1 });
+  const liveA = buildDoc({
+    _id: "k",
+    _gen: 2,
+    _parent: g1._rev,
+    v: "live-a",
+  });
+  const liveB = buildDoc({
+    _id: "k",
+    _gen: 2,
+    _parent: g1._rev,
+    v: "live-b",
+  });
+  const tombA = buildDoc({
+    _id: "k",
+    _gen: 2,
+    _parent: g1._rev,
+    _deleted: true,
+    via: "A",
+  });
+  const tombB = buildDoc({
+    _id: "k",
+    _gen: 2,
+    _parent: g1._rev,
+    _deleted: true,
+    via: "B",
+  });
+  bulkInsert(store, [g1, liveA, liveB, tombA, tombB]);
+
+  const resolved = getResolved(store, "k");
+  ok(resolved);
+  // Winner is one of the live leaves
+  ok([liveA._rev, liveB._rev].includes(resolved.winner._rev));
+  // Other live leaf is in conflicts
+  const expectedLiveConflict =
+    resolved.winner._rev === liveA._rev ? liveB._rev : liveA._rev;
+  deepStrictEqual(resolved.conflicts, [expectedLiveConflict]);
+  // Both tombstones are in deletedConflicts (sorted by hash within deleted group)
+  deepStrictEqual(
+    [...resolved.deletedConflicts].sort(),
+    [tombA._rev, tombB._rev].sort(),
+  );
+});
+
+test("getResolved - all-deleted document: winner is a tombstone, conflicts empty", () => {
+  const store = freshStore();
+  const g1 = buildDoc({ _id: "k", _gen: 1, n: 1 });
+  const tombA = buildDoc({
+    _id: "k",
+    _gen: 2,
+    _parent: g1._rev,
+    _deleted: true,
+    via: "A",
+  });
+  const tombB = buildDoc({
+    _id: "k",
+    _gen: 2,
+    _parent: g1._rev,
+    _deleted: true,
+    via: "B",
+  });
+  bulkInsert(store, [g1, tombA, tombB]);
+
+  const resolved = getResolved(store, "k");
+  ok(resolved);
+  deepStrictEqual(resolved.winner._deleted, true);
+  ok([tombA._rev, tombB._rev].includes(resolved.winner._rev));
+  deepStrictEqual(resolved.conflicts, []);
+  // The other tombstone is in deletedConflicts
+  const expectedDeletedLoser =
+    resolved.winner._rev === tombA._rev ? tombB._rev : tombA._rev;
+  deepStrictEqual(resolved.deletedConflicts, [expectedDeletedLoser]);
 });
 
 test("bulkInsert - rejects a doc whose _rev does not match its content", () => {
@@ -453,10 +531,7 @@ test("replication - schemas propagate, and subsequent puts validate", () => {
   const result = bulkInsert(sourceB, changes as unknown as BulkDocument[]);
   deepStrictEqual(result.inserted, 1);
 
-  throws(
-    () => put(sourceB, { _id: "p1", _type: "post" }),
-    ValidationError,
-  );
+  throws(() => put(sourceB, { _id: "p1", _type: "post" }), ValidationError);
   const good = put(sourceB, { _id: "p1", _type: "post", body: "hello" });
   deepStrictEqual(parseRev(good._rev).gen, 1);
 
@@ -487,4 +562,143 @@ test("replica convergence - identical write sequences produce identical _revs", 
   const b2 = put(b, { _id: "k", x: 2, _parent: b1._rev });
   deepStrictEqual(a1._rev, b1._rev);
   deepStrictEqual(a2._rev, b2._rev);
+});
+
+test("getRevisionBulk - empty input returns empty receipt without touching DB", () => {
+  const store = freshStore();
+  const r = getRevisionBulk(store, []);
+  deepStrictEqual(r.documents, []);
+  deepStrictEqual(r.missing, []);
+});
+
+test("getRevisionBulk - returns docs in input order regardless of insertion order", () => {
+  const store = freshStore();
+  const g1 = put(store, { _id: "k", n: 1 });
+  const g2 = put(store, { _id: "k", n: 2, _parent: g1._rev });
+  const g3 = put(store, { _id: "k", n: 3, _parent: g2._rev });
+
+  const r = getRevisionBulk(store, [g3._rev, g1._rev, g2._rev]);
+  deepStrictEqual(
+    r.documents.map((d) => d._rev),
+    [g3._rev, g1._rev, g2._rev],
+  );
+  deepStrictEqual(r.missing, []);
+});
+
+test("getRevisionBulk - missing revs surface in missing, not documents", () => {
+  const store = freshStore();
+  const g1 = put(store, { _id: "k", n: 1 });
+  const fake = formatRev(1, "deadbeef");
+
+  const r = getRevisionBulk(store, [g1._rev, fake]);
+  deepStrictEqual(r.documents.length, 1);
+  deepStrictEqual(r.documents[0]._rev, g1._rev);
+  deepStrictEqual(r.missing, [fake]);
+});
+
+test("getRevisionBulk - duplicate existing revs duplicate in documents", () => {
+  const store = freshStore();
+  const g1 = put(store, { _id: "k", n: 1 });
+
+  const r = getRevisionBulk(store, [g1._rev, g1._rev, g1._rev]);
+  deepStrictEqual(r.documents.length, 3);
+  deepStrictEqual(
+    r.documents.map((d) => d._rev),
+    [g1._rev, g1._rev, g1._rev],
+  );
+  deepStrictEqual(r.missing, []);
+});
+
+test("getRevisionBulk - duplicate missing revs deduped in missing", () => {
+  const store = freshStore();
+  const fake = formatRev(1, "deadbeef");
+  const r = getRevisionBulk(store, [fake, fake, fake]);
+  deepStrictEqual(r.documents, []);
+  deepStrictEqual(r.missing, [fake]);
+});
+
+test("getRevisionBulk - all-missing input returns empty docs and deduped missing", () => {
+  const store = freshStore();
+  const a = formatRev(1, "aaaa");
+  const b = formatRev(1, "bbbb");
+  const r = getRevisionBulk(store, [a, b, a]);
+  deepStrictEqual(r.documents, []);
+  deepStrictEqual(r.missing, [a, b]);
+});
+
+test("getHistory - linear chain returns leaf-to-root order", () => {
+  const store = freshStore();
+  const g1 = put(store, { _id: "k", n: 1 });
+  const g2 = put(store, { _id: "k", n: 2, _parent: g1._rev });
+  const g3 = put(store, { _id: "k", n: 3, _parent: g2._rev });
+
+  const history = getHistory(store, "k");
+  deepStrictEqual(
+    history.map((d) => d._rev),
+    [g3._rev, g2._rev, g1._rev],
+  );
+});
+
+test("getHistory - default rev equals starting from the winner", () => {
+  const store = freshStore();
+  const g1 = put(store, { _id: "k", n: 1 });
+  const g2 = put(store, { _id: "k", n: 2, _parent: g1._rev });
+
+  const winner = get(store, "k");
+  ok(winner);
+  const a = getHistory(store, "k");
+  const b = getHistory(store, "k", winner._rev);
+  deepStrictEqual(
+    a.map((d) => d._rev),
+    b.map((d) => d._rev),
+  );
+  deepStrictEqual(a[0]._rev, g2._rev);
+});
+
+test("getHistory - divergent leaves: each leaf walks back to shared root", () => {
+  const store = freshStore();
+  const g1 = buildDoc({ _id: "k", _gen: 1, n: 1 });
+  const g2a = buildDoc({
+    _id: "k",
+    _gen: 2,
+    _parent: g1._rev,
+    from: "A",
+  });
+  const g2b = buildDoc({
+    _id: "k",
+    _gen: 2,
+    _parent: g1._rev,
+    from: "B",
+  });
+  bulkInsert(store, [g1, g2a, g2b]);
+
+  const histA = getHistory(store, "k", g2a._rev);
+  const histB = getHistory(store, "k", g2b._rev);
+  deepStrictEqual(
+    histA.map((d) => d._rev),
+    [g2a._rev, g1._rev],
+  );
+  deepStrictEqual(
+    histB.map((d) => d._rev),
+    [g2b._rev, g1._rev],
+  );
+});
+
+test("getHistory - unknown id returns empty array", () => {
+  const store = freshStore();
+  deepStrictEqual(getHistory(store, "nope"), []);
+});
+
+test("getHistory - unknown rev returns empty array", () => {
+  const store = freshStore();
+  put(store, { _id: "k", n: 1 });
+  deepStrictEqual(getHistory(store, "k", formatRev(1, "deadbeef")), []);
+});
+
+test("getHistory - rev belongs to a different document is rejected", () => {
+  const store = freshStore();
+  put(store, { _id: "k", n: 1 });
+  const other = put(store, { _id: "j", n: 1 });
+  // asking for "k"'s history starting from a "j" rev should not return "j"
+  deepStrictEqual(getHistory(store, "k", other._rev), []);
 });

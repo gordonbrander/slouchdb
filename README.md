@@ -51,8 +51,8 @@ const b = put(store, {
   title: "hello, world",
 });
 
-get(store, "n1");     // -> b (the winning revision)
-remove(store, "n1", b._rev);  // tombstone
+get(store, "n1"); // -> b (the winning revision)
+remove(store, "n1", b._rev); // tombstone
 ```
 
 ## Concepts

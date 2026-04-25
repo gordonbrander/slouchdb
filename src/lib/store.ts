@@ -1,7 +1,7 @@
 import { type DatabaseSync } from "node:sqlite";
 import { cid } from "./cid.ts";
 import { ConflictError, IntegrityError } from "./errors.ts";
-import { openDatabase } from "./sqlite.ts";
+import { openDatabase, savepoint } from "./sqlite.ts";
 
 /** The authoritative set of reserved field names. */
 export const RESERVED: ReadonlySet<string> = new Set([
@@ -48,7 +48,15 @@ export type BulkDocument = {
 
 export type Resolved = {
   winner: Document;
+  /** Live (non-tombstone) leaf revs other than the winner. CouchDB `_conflicts`. */
   conflicts: string[];
+  /** Tombstone leaf revs. CouchDB `_deleted_conflicts`. */
+  deletedConflicts: string[];
+};
+
+export type GetRevisionBulkReceipt = {
+  documents: Document[];
+  missing: string[];
 };
 
 export type BulkResult = {
@@ -211,8 +219,7 @@ export const put = (store: Store, input: PutInput): Document => {
   const _deleted = input._deleted ?? false;
   const data = extractData(input);
 
-  db.exec("BEGIN IMMEDIATE");
-  try {
+  return savepoint(db, "put", () => {
     const leaves = leavesByIdStmt(db).all(_id) as Row[];
 
     const _gen = _parent === undefined ? 1 : parseRev(_parent).gen + 1;
@@ -220,10 +227,7 @@ export const put = (store: Store, input: PutInput): Document => {
     const _rev = formatRev(_gen, hash);
 
     const existing = getByRevStmt(db).get(_rev) as Row | undefined;
-    if (existing) {
-      db.exec("COMMIT");
-      return rowToDocument(existing);
-    }
+    if (existing) return rowToDocument(existing);
 
     if (_type !== undefined && _type !== "_schema") {
       const pending: PendingDocument = {
@@ -263,12 +267,8 @@ export const put = (store: Store, input: PutInput): Document => {
     );
 
     const row = getByRevStmt(db).get(_rev) as Row;
-    db.exec("COMMIT");
     return rowToDocument(row);
-  } catch (err) {
-    db.exec("ROLLBACK");
-    throw err;
-  }
+  });
 };
 
 /** Create a tombstone extending `parentRev`. */
@@ -312,8 +312,11 @@ export const getLeaves = (store: Store, id: string): Document[] => {
 };
 
 /**
- * Winner plus the `_rev`s of all other leaves. Matches CouchDB's
- * `?conflicts=true` read shape. Undefined if the id is absent.
+ * Winner plus the `_rev`s of all other leaves, split by deletion status.
+ * Mirrors CouchDB's `?conflicts=true` (`_conflicts`) and
+ * `?deleted_conflicts=true` (`_deleted_conflicts`) read shapes. The doc
+ * is "in conflict" exactly when `conflicts.length > 0`. Undefined if
+ * the id is absent.
  */
 export const getResolved = (store: Store, id: string): Resolved | undefined => {
   const leaves = getLeaves(store, id);
@@ -329,7 +332,72 @@ export const getResolved = (store: Store, id: string): Resolved | undefined => {
         : 0;
   });
   const [winner, ...rest] = decorated;
-  return { winner: winner.doc, conflicts: rest.map((r) => r.doc._rev) };
+  const conflicts: string[] = [];
+  const deletedConflicts: string[] = [];
+  for (const r of rest) {
+    (r.doc._deleted ? deletedConflicts : conflicts).push(r.doc._rev);
+  }
+  return { winner: winner.doc, conflicts, deletedConflicts };
+};
+
+/**
+ * Fetch many revisions in one round-trip. Returns matched documents in
+ * input order alongside any input revs that had no row. Duplicate revs in
+ * the input are duplicated in `documents` (when found) but appear once in
+ * `missing` (when absent). Empty input returns empty receipt without
+ * touching the database.
+ */
+export const getRevisionBulk = (
+  store: Store,
+  revs: readonly string[],
+): GetRevisionBulkReceipt => {
+  if (revs.length === 0) return { documents: [], missing: [] };
+  const placeholders = revs.map(() => "?").join(",");
+  const rows = store.db
+    .prepare(`SELECT * FROM documents WHERE _rev IN (${placeholders})`)
+    .all(...revs) as Row[];
+  const byRev = new Map(rows.map((r) => [r._rev, r]));
+  const documents: Document[] = [];
+  const missingSet = new Set<string>();
+  const missing: string[] = [];
+  for (const rev of revs) {
+    const row = byRev.get(rev);
+    if (row) {
+      documents.push(rowToDocument(row));
+    } else if (!missingSet.has(rev)) {
+      missingSet.add(rev);
+      missing.push(rev);
+    }
+  }
+  return { documents, missing };
+};
+
+/**
+ * Walk the parent chain from a leaf back to the root. Default starting
+ * revision is the winner of `id`. Returns documents in leaf-to-root order
+ * (start first, root last). Stops at the first missing ancestor (relevant
+ * once revision-tree pruning lands). Returns an empty array if `id` is
+ * unknown, if the supplied `rev` is unknown, or if the supplied `rev`
+ * belongs to a different document.
+ */
+export const getHistory = (
+  store: Store,
+  id: string,
+  rev?: string,
+): Document[] => {
+  const startRev = rev ?? get(store, id)?._rev;
+  if (startRev === undefined) return [];
+  const out: Document[] = [];
+  const stmt = getByRevStmt(store.db);
+  let cursor: string | undefined = startRev;
+  while (cursor !== undefined) {
+    const row = stmt.get(cursor) as Row | undefined;
+    if (!row || row._id !== id) break;
+    const doc = rowToDocument(row);
+    out.push(doc);
+    cursor = doc._parent;
+  }
+  return out;
 };
 
 /**
@@ -347,8 +415,7 @@ export const bulkInsert = (
   const { db } = store;
   const result: BulkResult = { inserted: 0, skipped: 0, rejected: [] };
 
-  db.exec("BEGIN IMMEDIATE");
-  try {
+  return savepoint(db, "bulk_insert", () => {
     const stmt = insertStmt(db);
     for (const doc of docs) {
       const data = extractData(doc);
@@ -391,13 +458,8 @@ export const bulkInsert = (
       if (info.changes === 1) result.inserted++;
       else result.skipped++;
     }
-    db.exec("COMMIT");
-  } catch (err) {
-    db.exec("ROLLBACK");
-    throw err;
-  }
-
-  return result;
+    return result;
+  });
 };
 
 /** All revisions with `_local_seq > since`, in order. Drives replication. */
