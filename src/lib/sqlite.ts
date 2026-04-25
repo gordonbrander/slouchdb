@@ -4,6 +4,31 @@ import { DatabaseSync } from "node:sqlite";
 export type Migration = string;
 
 /**
+ * Run `fn` inside a SQLite SAVEPOINT named `name`. Releases on success;
+ * `ROLLBACK TO` + `RELEASE` on throw, then rethrows. Savepoints nest by
+ * name, so this helper composes: an inner `savepoint` rolls back only its
+ * own block while the outer block can still commit, and a top-level
+ * savepoint opens an implicit transaction. `name` is interpolated into
+ * SQL — pass a static identifier.
+ */
+export const savepoint = <T>(
+  db: DatabaseSync,
+  name: string,
+  fn: () => T,
+): T => {
+  db.exec(`SAVEPOINT ${name}`);
+  try {
+    const result = fn();
+    db.exec(`RELEASE ${name}`);
+    return result;
+  } catch (err) {
+    db.exec(`ROLLBACK TO ${name}`);
+    db.exec(`RELEASE ${name}`);
+    throw err;
+  }
+};
+
+/**
  * Open a SQLite database at `path` (":memory:" for an in-memory DB) and apply
  * any migrations that have not yet run. Migrations are identified by their
  * 1-based index; applied versions are tracked in `_migrations`.
