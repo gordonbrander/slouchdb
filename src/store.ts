@@ -43,6 +43,12 @@ export type BulkDocument = {
   [field: string]: unknown;
 };
 
+/**
+ * Read shape for a multi-leaf document: deterministically chosen `winner`
+ * plus the `_rev`s of every other leaf, split by deletion status. Mirrors
+ * CouchDB's `?conflicts=true` and `?deleted_conflicts=true` projections.
+ * The doc is "in conflict" exactly when `conflicts.length > 0`.
+ */
 export type Resolved = {
   winner: Document;
   /** Live (non-tombstone) leaf revs other than the winner. CouchDB `_conflicts`. */
@@ -51,17 +57,27 @@ export type Resolved = {
   deletedConflicts: string[];
 };
 
+/**
+ * Result of {@link getRevisionBulk}: matched rows in input order plus any
+ * input revs that had no row.
+ */
 export type GetRevisionBulkReceipt = {
   documents: Document[];
   missing: string[];
 };
 
+/**
+ * Result of {@link bulkInsert}. `inserted` and `skipped` (already-seen
+ * `_rev`s, deduped via `INSERT OR IGNORE`) sum to the number of well-formed
+ * input rows; integrity-check failures land in `rejected` instead.
+ */
 export type BulkResult = {
   inserted: number;
   skipped: number;
   rejected: Array<{ rev: string; reason: string }>;
 };
 
+/** Opaque handle to an open slouchdb store. Backed by `node:sqlite`. */
 export type Store = DatabaseSync;
 
 const migrations: readonly string[] = [
@@ -84,9 +100,15 @@ const migrations: readonly string[] = [
   `,
 ];
 
+/**
+ * Open or create a slouchdb store at `path`. Pass `":memory:"` for an
+ * in-memory database. Migrations are applied on first open of a fresh DB
+ * and are no-ops on reopen.
+ */
 export const openStore = (path: string): Store =>
   openDatabase(path, migrations);
 
+/** Close the underlying SQLite connection. */
 export const closeStore = (store: Store): void => {
   store.close();
 };

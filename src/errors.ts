@@ -1,3 +1,9 @@
+/**
+ * Thrown by `put` when `_parent` is not a current leaf for `_id` — either
+ * the caller supplied a stale revision, or omitted `_parent` for a
+ * document that already has revisions. `actualLeaves` carries the current
+ * leaf `_rev`s so callers can re-read and retry against a real leaf.
+ */
 export class ConflictError extends Error {
   override name = "ConflictError";
   readonly id: string;
@@ -22,6 +28,13 @@ export class ConflictError extends Error {
   }
 }
 
+/**
+ * Recorded by `bulkInsert` (in `result.rejected`) when a row's `_rev` hash
+ * does not match the hash recomputed from the supplied fields — indicating
+ * the row was tampered with, or the sender produced it from a different
+ * definition of the hash input. Constructed for its message; never thrown
+ * by the library itself.
+ */
 export class IntegrityError extends Error {
   override name = "IntegrityError";
   readonly providedHash: string;
