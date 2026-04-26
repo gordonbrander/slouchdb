@@ -3,11 +3,10 @@
 CouchDB, but for SQLite. A local, embeddable document store with CouchDB
 semantics — revision trees, optimistic concurrency, deterministic
 conflict-winner selection, and a changes feed that supports replication
-from/to other slouchdb instances. Optional per-type JSONSchema validation is
-available as a separate, opt-in helper.
+from/to other slouchdb instances.
 
 Built on `node:sqlite` (Node 25+). Synchronous API, no external runtime
-dependencies beyond `zod` (used only by the optional validation helper).
+dependencies.
 
 ## Status
 
@@ -46,28 +45,10 @@ get(store, "n1"); // -> b (the winning revision)
 remove(store, "n1", b._rev); // tombstone
 ```
 
-### Validation (opt-in)
-
-Validation is decoupled from the store. Register a schema, then call
-`getSchema` and validate yourself before writing:
-
-```ts
-import { put } from "slouchdb";
-import { getSchema, putSchema } from "slouchdb/validate";
-import * as z from "zod/v4";
-
-putSchema(store, "note", z.object({ title: z.string() }));
-
-const schema = getSchema(store, "note");
-const parsed = schema?.safeParse({ title: "hello" });
-if (!parsed?.success) throw parsed?.error;
-
-put(store, { _id: "n1", _type: "note", ...parsed.data });
-```
-
-`put` itself does no schema validation — keeping the store agnostic means
+`put` does no schema validation. The store is schema-agnostic so that
 replication never stalls because a schema hasn't arrived yet, and callers
-choose when (or whether) to enforce.
+choose when (or whether) to enforce — bring your own validator (zod, ajv,
+valibot, anything).
 
 ## Concepts
 
@@ -107,13 +88,12 @@ Schemas live in the same `documents` table as everything else:
 - `_type = "_schema"`, `_id = "_schema/<type-name>"`.
 - User data is a JSONSchema object.
 - Schemas participate in MVCC and replicate like any other document.
-- `getSchema(store, type)` looks up `_schema/<type>`, compiles it with
-  `z.fromJSONSchema`, and caches the compiled schema by the schema doc's
-  `_rev` — content-addressed, so updates invalidate automatically.
+- The store does not interpret schema documents. To enforce, look up
+  `_schema/<type>` via `get`, compile it with the validator of your choice
+  (e.g. `z.fromJSONSchema`, `ajv`), and validate before calling `put`.
 
-If no schema exists for a type, `getSchema` returns `undefined`. A freshly
-replicated database may receive typed documents before their schema has
-replicated in; enforcement is the caller's choice.
+A freshly replicated database may receive typed documents before their
+schema has replicated in; enforcement is the caller's choice.
 
 ### Replication
 
@@ -167,16 +147,6 @@ RESERVED: ReadonlySet<string>                   // reserved field names
 import { resolve, type Reconciler } from "slouchdb/resolve";
 
 resolve(store, id, reconcile): Document | undefined
-```
-
-### `slouchdb/validate`
-
-```ts
-import { getSchema, putSchema, clearSchemaCache } from "slouchdb/validate";
-
-getSchema(store, type): z.ZodType | undefined
-putSchema(store, type, zodSchema, _parent?): Document
-clearSchemaCache(): void   // test-only
 ```
 
 ### `slouchdb/errors`
