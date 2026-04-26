@@ -9,7 +9,6 @@
     ".": "./src/index.ts",
     "./store": "./src/store.ts",
     "./errors": "./src/errors.ts",
-    "./validate": "./src/validate.ts",
     "./resolve": "./src/resolve.ts"
   },
   "scripts": {
@@ -18,9 +17,6 @@
     "check": "tsc --noEmit",
     "test": "node --test 'src/**/*.test.ts'",
     "dead": "node --test --experimental-test-coverage 'src/**/*.test.ts'"
-  },
-  "dependencies": {
-    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

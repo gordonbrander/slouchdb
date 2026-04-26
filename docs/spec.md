@@ -5,8 +5,7 @@
 slouchdb is a local document store with CouchDB semantics — revision trees,
 optimistic concurrency, deterministic conflict-winner selection, and a
 changes feed that supports replication from/to another slouchdb instance.
-Per-type JSONSchema validation is provided as a separate, opt-in helper
-(`src/validate.ts`) — the store itself is schema-agnostic.
+The store is schema-agnostic; enforcement is left to the caller.
 
 Scope:
 
@@ -15,11 +14,10 @@ Scope:
 - **Schemas are documents** — no separate `schemas` table; schemas live in the
   `documents` table under a reserved type and key convention, so they
   participate in MVCC and replicate like any other document.
-- **Validation is decoupled from the store** — the store does not call into
-  the validator. Callers fetch a compiled schema via `getSchema` and validate
-  before `put`. Rationale: replication must never stall on a typed document
-  whose schema hasn't replicated yet, and consumers may want to enforce,
-  warn, or skip on their own terms.
+- **Schema enforcement is out of scope** — the store does not validate.
+  Replication must never stall on a typed document whose schema hasn't
+  replicated yet, and consumers may want to enforce, warn, or skip on their
+  own terms. Pick any validator.
 - **Sync API** — `node:sqlite` is synchronous; match it, no Promise wrapper.
 - **Reserved field names mirror CouchDB** where concepts align: `_id`, `_rev`,
   `_deleted`, with `_parent` naming the parent revision explicitly.
@@ -92,15 +90,12 @@ Schemas live in the same table. Conventions:
 - Its `_id` is `_schema/<type-name>` (mirrors CouchDB's `_design/<name>`).
 - Its user data is a JSONSchema object.
 - Schema documents themselves are **not** schema-validated — there is no
-  registered schema for `_schema` and introducing a meta-schema is out of
-  scope for v1.
-- To validate a write with `_type = "foo"`: callers use
-  `getSchema(store, "foo")` (from `src/validate.ts`) — it looks up the
-  winning revision of `_id = "_schema/foo"`, and if it exists and is not a
-  tombstone, returns it compiled via `z.fromJSONSchema`. The caller does
-  whatever they want with the result (typically `safeParse` against the
-  document's user-data portion before `put`). The store itself never calls
-  the validator.
+  meta-schema for `_schema` and introducing one is out of scope for v1.
+- To validate a write with `_type = "foo"`: callers `get(store,
+"_schema/foo")`, check that it exists and is not a tombstone, then run
+  whatever validator they prefer (e.g. compile the JSONSchema via
+  `z.fromJSONSchema` or `ajv`) against the document's user-data portion
+  before `put`. The store itself never calls a validator.
 
 Because schema docs are versioned under the same MVCC, schema evolution is
 just another write; replication ships schemas alongside data.
@@ -172,8 +167,8 @@ export const revisionHash = (input: {
 
 // Optimistic-concurrency write. Extends one leaf. Returns the new document.
 // Throws ConflictError if _parent is not a current leaf. The store itself
-// performs no schema validation — that is the caller's responsibility (see
-// `src/validate.ts`).
+// performs no schema validation — callers validate however they like before
+// calling `put`.
 export const put = (store: Store, input: PutInput): Document;
 
 // Convenience: creates a tombstone extending parentRev.
@@ -239,54 +234,6 @@ export const bulkInsert = (
 export const changesSince = (store: Store, since: number): Document[];
 ```
 
-### `src/validate.ts`
-
-Optional, opt-in validation helper. Separated so `store.ts` doesn't import
-zod and the store remains schema-agnostic.
-
-```ts
-import * as z from "zod/v4";
-import { type Document, type Store } from "./store.ts";
-
-// Look up the registered schema for `type` and return it as a compiled Zod
-// schema. Reads the winning revision of `_schema/<type>`; returns undefined
-// if no such document exists or the schema has been tombstoned. Compiled
-// schemas are cached by the schema document's `_rev` (content-addressed —
-// the cache invalidates automatically when the schema changes).
-export const getSchema = (
-  store: Store,
-  type: string,
-): z.ZodType | undefined;
-
-// Register or update the schema for `type`. Converts `zodSchema` to JSON
-// Schema and writes it as the `_schema/<type>` document. Subsequent calls
-// extend the schema chain linearly (parented on the current winning leaf,
-// including a tombstone if the schema was previously deleted).
-export const putSchema = (
-  store: Store,
-  type: string,
-  zodSchema: z.ZodType,
-  _parent?: string,
-): Document;
-
-// Test-only escape hatch.
-export const clearSchemaCache = (): void;
-```
-
-Typical caller flow:
-
-```ts
-const schema = getSchema(store, doc._type);
-const parsed = schema?.safeParse(extractData(doc));
-if (parsed && !parsed.success) throw parsed.error;
-put(store, doc);
-```
-
-Returning `undefined` for missing schemas means clients naturally tolerate a
-freshly replicated database that holds typed documents whose schemas have
-not yet replicated in. Enforcement happens once the schema is known — the
-caller picks the policy.
-
 ### `src/resolve.ts`
 
 Conflict-resolution helper. Lives outside the store so the store stays small
@@ -326,9 +273,7 @@ export class IntegrityError extends Error {
 }
 ```
 
-There is no `ValidationError`: the store does not validate. Callers that
-opt in to schema validation surface zod's own `ZodError` (or whatever they
-wrap it in) at their own layer.
+There is no `ValidationError`: the store does not validate.
 
 ## Behavior details
 
@@ -350,8 +295,7 @@ Wrapped in a `savepoint`:
 7. Return the full `Document`.
 
 `put` performs no schema validation. Callers that want validation should
-fetch a compiled schema via `getSchema(store, _type)` and `safeParse` the
-user-data portion of the input before calling `put`.
+run their preferred validator on the input before calling `put`.
 
 ### `bulkInsert`
 
@@ -393,15 +337,12 @@ revision is emitted, which is CouchDB's `style=all_docs`.
   versions in a `_migrations` table.
 - `src/store.ts` — types + all document APIs listed above.
 - `src/store.test.ts` — unit tests.
-- `src/validate.ts` — `getSchema` / `putSchema` (opt-in JSONSchema helper).
-- `src/validate.test.ts` — unit tests.
 - `src/resolve.ts` — `resolve(store, id, reconcile)` conflict-merge helper.
 - `src/resolve.test.ts` — unit tests.
 - `src/errors.ts` — error classes.
-- `src/index.ts` — re-exports `./store` and `./errors`. The `validate` and
-  `resolve` modules are reached via subpath exports (`slouchdb/validate`,
-  `slouchdb/resolve`) so consumers that don't need them don't pay the cost
-  of importing zod.
+- `src/index.ts` — re-exports `./store` and `./errors`. The `resolve`
+  module is reached via the `slouchdb/resolve` subpath export so consumers
+  that don't need it can ignore it.
 
 Reuse:
 
@@ -445,23 +386,6 @@ Use `node --test src/*.test.ts`. Co-locate, match existing style.
 - **Schema docs participate in MVCC**: writing an arbitrary JSONSchema at
   `_schema/x` with `_type = "_schema"` succeeds; the store does not treat
   schema documents specially at write time.
-
-### `validate.test.ts`
-
-- `getSchema` for an unknown type returns `undefined`.
-- `getSchema` for a tombstoned schema returns `undefined`.
-- The compiled schema returned by `getSchema` accepts/rejects user data via
-  `safeParse` per the JSONSchema (incl. `additionalProperties: false`).
-- Cache hit: two calls with the same schema-doc `_rev` return the same
-  compiled instance.
-- Cache invalidation on schema update: put a new schema revision → the old
-  compiled instance is not reused; the new one enforces the new shape.
-- `putSchema` round-trip: a Zod schema written via `putSchema` is readable
-  via `getSchema`.
-- `putSchema` linearizes: subsequent calls extend the schema chain
-  (`_parent` resolves to the current winner).
-- Replication: `bulkInsert`-ing a schema revision into a downstream replica
-  makes `getSchema` return the same enforcement on that replica.
 
 ### `resolve.test.ts`
 
