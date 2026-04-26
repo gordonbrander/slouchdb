@@ -454,3 +454,33 @@ export const changesSince = (store: Store, since: number): Document[] => {
   const rows = changesStmt(store).all(since) as Row[];
   return rows.map(rowToDocument);
 };
+
+/**
+ * Result of {@link replicate}: the {@link BulkResult} from ingress on the
+ * destination, plus the new `cursor` to feed into the next call. The cursor
+ * is the source's `_local_seq` watermark — it advances only on the source
+ * side and is unaffected by the fresh `_local_seq` values the destination
+ * assigns on insert.
+ */
+export type ReplicateResult = BulkResult & { cursor: number };
+
+/**
+ * Pull every revision on `source` newer than `cursor` and apply it to
+ * `dest` via {@link bulkInsert}. Returns the bulk result alongside the new
+ * cursor. Idempotent: rerunning with the same `cursor` is a no-op when no
+ * new revisions exist on the source, and rerunning from `0` skips
+ * already-seen `_rev`s on the destination.
+ *
+ * Replication is one-way; call twice (swapping arguments) for bidirectional
+ * sync. Each direction tracks its own cursor.
+ */
+export const replicate = (
+  source: Store,
+  dest: Store,
+  cursor: number,
+): ReplicateResult => {
+  const batch = changesSince(source, cursor);
+  const result = bulkInsert(dest, batch);
+  const next = batch.at(-1)?._local_seq ?? cursor;
+  return { ...result, cursor: next };
+};
