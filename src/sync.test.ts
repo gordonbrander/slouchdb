@@ -111,7 +111,7 @@ test("sync - concurrent edits produce a fork visible identically on both sides",
   const b = freshStore();
   const g1 = put(a, { _id: "k", v: 0 });
   let aCursor = 0;
-  let bCursor = 0;
+  const bCursor = 0;
   ({ cursor: aCursor } = replicate(a, b, aCursor));
 
   const childA = buildDoc({ _id: "k", _gen: 2, _parent: g1._rev, v: "A" });
@@ -119,8 +119,8 @@ test("sync - concurrent edits produce a fork visible identically on both sides",
   bulkInsert(a, [childA]);
   bulkInsert(b, [childB]);
 
-  ({ cursor: aCursor } = replicate(a, b, aCursor));
-  ({ cursor: bCursor } = replicate(b, a, bCursor));
+  replicate(a, b, aCursor);
+  replicate(b, a, bCursor);
 
   const ra = getResolved(a, "k")!;
   const rb = getResolved(b, "k")!;
@@ -156,8 +156,8 @@ test("sync - independent merges of the same fork converge to identical state", (
   const mergedB = resolve(b, "k", lastWriteWins)!;
   deepStrictEqual(mergedA._rev, mergedB._rev);
 
-  ({ cursor: aCursor } = replicate(a, b, aCursor));
-  ({ cursor: bCursor } = replicate(b, a, bCursor));
+  replicate(a, b, aCursor);
+  replicate(b, a, bCursor);
 
   for (const s of [a, b]) {
     const leaves = getLeaves(s, "k");
