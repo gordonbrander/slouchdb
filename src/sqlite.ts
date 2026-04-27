@@ -31,7 +31,7 @@ export const savepoint = <T>(
 /**
  * Open a SQLite database at `path` (":memory:" for an in-memory DB) and apply
  * any migrations that have not yet run. Migrations are identified by their
- * 1-based index; applied versions are tracked in `_migrations`.
+ * 1-based index; applied versions are tracked in `_slouchdb_migrations`.
  */
 export const openDatabase = (
   path: string,
@@ -41,7 +41,7 @@ export const openDatabase = (
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
+    CREATE TABLE IF NOT EXISTS _slouchdb_migrations (
       version INTEGER PRIMARY KEY,
       applied_at INTEGER NOT NULL
     )
@@ -49,14 +49,14 @@ export const openDatabase = (
 
   const applied = new Set<number>(
     (
-      db.prepare("SELECT version FROM _migrations").all() as Array<{
+      db.prepare("SELECT version FROM _slouchdb_migrations").all() as Array<{
         version: number;
       }>
     ).map((r) => r.version),
   );
 
   const insertVersion = db.prepare(
-    "INSERT INTO _migrations (version, applied_at) VALUES (?, ?)",
+    "INSERT INTO _slouchdb_migrations (version, applied_at) VALUES (?, ?)",
   );
 
   for (let i = 0; i < migrations.length; i++) {
