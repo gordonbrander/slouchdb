@@ -334,7 +334,7 @@ revision is emitted, which is CouchDB's `style=all_docs`.
 
 - `src/sqlite.ts` — `openDatabase(path, migrations)` and `savepoint(...)`.
   Migrations are plain SQL strings in an array; runner tracks applied
-  versions in a `_migrations` table.
+  versions in a `_slouchdb_migrations` table.
 - `src/store.ts` — types + all document APIs listed above.
 - `src/store.test.ts` — unit tests.
 - `src/resolve.ts` — `resolve(store, id, reconcile)` conflict-merge helper.
