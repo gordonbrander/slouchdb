@@ -199,12 +199,12 @@ export const getLeaves = (store: Store, id: string): Document[];
 // ?conflicts=true (`_conflicts`) and ?deleted_conflicts=true
 // (`_deleted_conflicts`) read shapes. The doc is "in conflict" exactly when
 // `conflicts.length > 0`.
-export type Resolved = {
+export type DocWithConflicts = {
   winner: Document;
   conflicts: string[];          // live (non-tombstone) losing leaves
   deletedConflicts: string[];   // tombstone leaves
 };
-export const getResolved = (store: Store, id: string): Resolved | undefined;
+export const getWithConflicts = (store: Store, id: string): DocWithConflicts | undefined;
 
 // Walk the parent chain leaf-to-root. Default start is the winner of `id`.
 // Stops at the first missing ancestor. Empty if `id` is unknown, the

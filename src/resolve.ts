@@ -1,6 +1,6 @@
 import { savepoint } from "./sqlite.ts";
 import {
-  getResolved,
+  getWithConflicts,
   getRevisionBulk,
   put,
   remove,
@@ -38,7 +38,7 @@ export const resolve = (
   id: string,
   reconcile: Reconciler,
 ): Document | undefined => {
-  const r = getResolved(store, id);
+  const r = getWithConflicts(store, id);
   if (!r) return undefined;
   if (r.conflicts.length === 0) return r.winner;
 

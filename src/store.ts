@@ -49,7 +49,7 @@ export type BulkDocument = {
  * CouchDB's `?conflicts=true` and `?deleted_conflicts=true` projections.
  * The doc is "in conflict" exactly when `conflicts.length > 0`.
  */
-export type Resolved = {
+export type DocWithConflicts = {
   winner: Document;
   /** Live (non-tombstone) leaf revs other than the winner. CouchDB `_conflicts`. */
   conflicts: string[];
@@ -308,7 +308,10 @@ export const getLeaves = (store: Store, id: string): Document[] => {
  * is "in conflict" exactly when `conflicts.length > 0`. Undefined if
  * the id is absent.
  */
-export const getResolved = (store: Store, id: string): Resolved | undefined => {
+export const getWithConflicts = (
+  store: Store,
+  id: string,
+): DocWithConflicts | undefined => {
   const leaves = getLeaves(store, id);
   if (leaves.length === 0) return undefined;
   const decorated = leaves.map((doc) => ({ doc, parsed: parseRev(doc._rev) }));
