@@ -6,7 +6,7 @@ import {
   formatRev,
   get,
   getLeaves,
-  getResolved,
+  getWithConflicts,
   openStore,
   put,
   remove,
@@ -122,8 +122,8 @@ test("sync - concurrent edits produce a fork visible identically on both sides",
   replicate(a, b, aCursor);
   replicate(b, a, bCursor);
 
-  const ra = getResolved(a, "k")!;
-  const rb = getResolved(b, "k")!;
+  const ra = getWithConflicts(a, "k")!;
+  const rb = getWithConflicts(b, "k")!;
   deepStrictEqual(getLeaves(a, "k").length, 2);
   deepStrictEqual(getLeaves(b, "k").length, 2);
   deepStrictEqual(ra.winner._rev, rb.winner._rev);
@@ -164,7 +164,7 @@ test("sync - independent merges of the same fork converge to identical state", (
     const live = leaves.filter((l) => !l._deleted);
     deepStrictEqual(live.length, 1);
     deepStrictEqual(live[0]._rev, mergedA._rev);
-    const r = getResolved(s, "k")!;
+    const r = getWithConflicts(s, "k")!;
     deepStrictEqual(r.winner._rev, mergedA._rev);
     deepStrictEqual(r.conflicts, []);
     deepStrictEqual(r.deletedConflicts.length, 1);

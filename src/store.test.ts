@@ -9,7 +9,7 @@ import {
   get,
   getHistory,
   getLeaves,
-  getResolved,
+  getWithConflicts,
   getRevision,
   getRevisionBulk,
   openStore,
@@ -232,7 +232,7 @@ test("winner selection - prefers non-deleted over deleted", () => {
   });
   bulkInsert(store, [g1, live, tomb]);
 
-  const resolved = getResolved(store, "k");
+  const resolved = getWithConflicts(store, "k");
   ok(resolved);
   deepStrictEqual(resolved.winner._rev, live._rev);
   deepStrictEqual(resolved.conflicts, []);
@@ -252,7 +252,7 @@ test("winner selection - higher gen wins among non-deleted leaves", () => {
   });
   bulkInsert(store, [g1, g2, g3, g2Fork]);
 
-  const resolved = getResolved(store, "k");
+  const resolved = getWithConflicts(store, "k");
   ok(resolved);
   deepStrictEqual(resolved.winner._rev, g3._rev);
   deepStrictEqual(resolved.conflicts, [g2Fork._rev]);
@@ -283,7 +283,7 @@ test("winner selection - gen is ordered numerically, not lexicographically (gen 
   });
   bulkInsert(store, [...chain, sibling]);
 
-  const resolved = getResolved(store, "k");
+  const resolved = getWithConflicts(store, "k");
   ok(resolved);
   deepStrictEqual(resolved.winner._rev, parent._rev);
   ok(resolved.winner._rev.startsWith("11-"));
@@ -305,7 +305,7 @@ test("winner selection - tiebreak on lexicographic hash among same-gen siblings"
     v: "bbb",
   });
   bulkInsert(store, [g1, a, b]);
-  const resolved = getResolved(store, "k");
+  const resolved = getWithConflicts(store, "k");
   ok(resolved);
   const aHash = parseRev(a._rev).hash;
   const bHash = parseRev(b._rev).hash;
@@ -316,7 +316,7 @@ test("winner selection - tiebreak on lexicographic hash among same-gen siblings"
   deepStrictEqual(resolved.deletedConflicts, []);
 });
 
-test("getResolved - splits live vs deleted leaves into conflicts vs deletedConflicts", () => {
+test("getWithConflicts - splits live vs deleted leaves into conflicts vs deletedConflicts", () => {
   const store = freshStore();
   const g1 = buildDoc({ _id: "k", _gen: 1, n: 1 });
   const liveA = buildDoc({
@@ -347,7 +347,7 @@ test("getResolved - splits live vs deleted leaves into conflicts vs deletedConfl
   });
   bulkInsert(store, [g1, liveA, liveB, tombA, tombB]);
 
-  const resolved = getResolved(store, "k");
+  const resolved = getWithConflicts(store, "k");
   ok(resolved);
   // Winner is one of the live leaves
   ok([liveA._rev, liveB._rev].includes(resolved.winner._rev));
@@ -362,7 +362,7 @@ test("getResolved - splits live vs deleted leaves into conflicts vs deletedConfl
   );
 });
 
-test("getResolved - all-deleted document: winner is a tombstone, conflicts empty", () => {
+test("getWithConflicts - all-deleted document: winner is a tombstone, conflicts empty", () => {
   const store = freshStore();
   const g1 = buildDoc({ _id: "k", _gen: 1, n: 1 });
   const tombA = buildDoc({
@@ -381,7 +381,7 @@ test("getResolved - all-deleted document: winner is a tombstone, conflicts empty
   });
   bulkInsert(store, [g1, tombA, tombB]);
 
-  const resolved = getResolved(store, "k");
+  const resolved = getWithConflicts(store, "k");
   ok(resolved);
   deepStrictEqual(resolved.winner._deleted, true);
   ok([tombA._rev, tombB._rev].includes(resolved.winner._rev));

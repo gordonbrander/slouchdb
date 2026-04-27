@@ -123,7 +123,7 @@ get(store, id): Document | undefined            // winning leaf
 getRevision(store, rev): Document | undefined   // any revision by _rev
 getRevisionBulk(store, revs): { documents, missing }
 getLeaves(store, id): Document[]                // all current leaves
-getResolved(store, id): Resolved | undefined    // winner + conflicts split
+getWithConflicts(store, id): DocWithConflicts | undefined    // winner + conflicts split
 getHistory(store, id, rev?): Document[]         // leaf-to-root walk
 
 bulkInsert(store, docs): { inserted, skipped, rejected }
@@ -136,7 +136,7 @@ extractData(doc): Record<string, unknown>       // strip reserved fields
 RESERVED: ReadonlySet<string>                   // reserved field names
 ```
 
-`Resolved` is `{ winner, conflicts, deletedConflicts }`, mirroring CouchDB's
+`DocWithConflicts` is `{ winner, conflicts, deletedConflicts }`, mirroring CouchDB's
 `?conflicts=true` (`_conflicts`) and `?deleted_conflicts=true`
 (`_deleted_conflicts`) read shapes. A document is "in conflict" exactly when
 `conflicts.length > 0`.

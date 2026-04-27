@@ -6,7 +6,7 @@ import {
   formatRev,
   get,
   getLeaves,
-  getResolved,
+  getWithConflicts,
   getRevision,
   openStore,
   put,
@@ -78,7 +78,7 @@ test("resolve - two-leaf conflict: merge under winner, loser tombstoned", () => 
   const b = buildDoc({ _id: "k", _gen: 2, _parent: g1._rev, branch: "B" });
   bulkInsert(store, [g1, a, b]);
 
-  const before = getResolved(store, "k");
+  const before = getWithConflicts(store, "k");
   ok(before);
   deepStrictEqual(before.conflicts.length, 1);
 
@@ -95,7 +95,7 @@ test("resolve - two-leaf conflict: merge under winner, loser tombstoned", () => 
 
   // The merge revision is the new winner; the tombstones produced by
   // `resolve` show up as `deletedConflicts`, not as live conflicts.
-  const after = getResolved(store, "k");
+  const after = getWithConflicts(store, "k");
   ok(after);
   deepStrictEqual(after.winner._rev, merged._rev);
   deepStrictEqual(after.conflicts, []);
@@ -118,7 +118,7 @@ test("resolve - reconciler sees [winner, ...losers] in deterministic order", () 
   const b = buildDoc({ _id: "k", _gen: 2, _parent: g1._rev, branch: "B" });
   bulkInsert(store, [g1, a, b]);
 
-  const before = getResolved(store, "k");
+  const before = getWithConflicts(store, "k");
   ok(before);
 
   let seen: readonly Document[] = [];
@@ -143,7 +143,7 @@ test("resolve - three-leaf conflict: one live leaf, two tombstones afterwards", 
   const c = buildDoc({ _id: "k", _gen: 2, _parent: g1._rev, branch: "C" });
   bulkInsert(store, [g1, a, b, c]);
 
-  const before = getResolved(store, "k");
+  const before = getWithConflicts(store, "k");
   ok(before);
   deepStrictEqual(before.conflicts.length, 2);
 
@@ -237,7 +237,7 @@ test("resolve - merge revision is a child of the previous winner", () => {
   const b = buildDoc({ _id: "k", _gen: 2, _parent: g1._rev, branch: "B" });
   bulkInsert(store, [g1, a, b]);
 
-  const before = getResolved(store, "k");
+  const before = getWithConflicts(store, "k");
   ok(before);
   const merged = resolve(store, "k", () => ({ _id: "k", merged: true }));
   ok(merged);
@@ -270,7 +270,7 @@ test("resolve - doc with only deleted conflicts (no live competitors) is a no-op
   });
   bulkInsert(store, [g1, live, tomb]);
 
-  const before = getResolved(store, "k");
+  const before = getWithConflicts(store, "k");
   ok(before);
   deepStrictEqual(before.conflicts, []);
   deepStrictEqual(before.deletedConflicts, [tomb._rev]);
