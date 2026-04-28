@@ -98,6 +98,58 @@ const migrations: readonly string[] = [
     CREATE INDEX documents_id_idx ON documents(_id);
     CREATE INDEX documents_parent_idx ON documents(_parent);
   `,
+  `
+    CREATE VIRTUAL TABLE documents_fts USING fts5(
+      content,
+      tokenize = 'porter unicode61'
+    );
+
+    CREATE TRIGGER documents_fts_ai AFTER INSERT ON documents BEGIN
+      DELETE FROM documents_fts
+      WHERE rowid IN (
+        SELECT _local_seq FROM documents WHERE _id = new._id
+      )
+      AND rowid NOT IN (
+        SELECT w._local_seq FROM documents w
+        WHERE w._id = new._id
+          AND w._deleted = 0
+          AND NOT EXISTS (SELECT 1 FROM documents c WHERE c._parent = w._rev)
+        ORDER BY w._rev_gen DESC, w._rev_hash ASC
+        LIMIT 1
+      );
+
+      INSERT OR IGNORE INTO documents_fts (rowid, content)
+      SELECT w._local_seq,
+             COALESCE((SELECT group_concat(value, ' ')
+                       FROM json_tree(w.data)
+                       WHERE type = 'text'), '')
+      FROM documents w
+      WHERE w._id = new._id
+        AND w._deleted = 0
+        AND NOT EXISTS (SELECT 1 FROM documents c WHERE c._parent = w._rev)
+      ORDER BY w._rev_gen DESC, w._rev_hash ASC
+      LIMIT 1;
+    END;
+
+    INSERT INTO documents_fts (rowid, content)
+    SELECT w._local_seq,
+           COALESCE((SELECT group_concat(value, ' ')
+                     FROM json_tree(w.data)
+                     WHERE type = 'text'), '')
+    FROM documents w
+    WHERE w._deleted = 0
+      AND NOT EXISTS (SELECT 1 FROM documents c WHERE c._parent = w._rev)
+      AND NOT EXISTS (
+        SELECT 1 FROM documents w2
+        WHERE w2._id = w._id
+          AND w2._deleted = 0
+          AND NOT EXISTS (SELECT 1 FROM documents c2 WHERE c2._parent = w2._rev)
+          AND (
+            w2._rev_gen > w._rev_gen
+            OR (w2._rev_gen = w._rev_gen AND w2._rev_hash < w._rev_hash)
+          )
+      );
+  `,
 ];
 
 /**
