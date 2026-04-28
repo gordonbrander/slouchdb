@@ -9,7 +9,8 @@
     ".": "./src/index.ts",
     "./store": "./src/store.ts",
     "./errors": "./src/errors.ts",
-    "./resolve": "./src/resolve.ts"
+    "./resolve": "./src/resolve.ts",
+    "./search": "./src/search.ts"
   },
   "scripts": {
     "lint": "eslint .",
